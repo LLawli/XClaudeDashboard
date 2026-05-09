@@ -11,6 +11,10 @@ pub fn default_cloud_config() -> Result<PathBuf> {
     Ok(claude_dir()?.join("data").join("xclaude-cloud.json"))
 }
 
+pub fn default_prices_cache() -> Result<PathBuf> {
+    Ok(claude_dir()?.join("data").join("xclaude-prices.json"))
+}
+
 fn claude_dir() -> Result<PathBuf> {
     let home = dirs::home_dir().ok_or_else(|| eyre!("could not resolve home directory"))?;
     Ok(home.join(".claude"))

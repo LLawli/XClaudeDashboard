@@ -1,0 +1,39 @@
+{
+  "sample_spec": {
+    "input_cost_per_token": 0,
+    "output_cost_per_token": 0,
+    "litellm_provider": "anthropic"
+  },
+  "claude-opus-4-7": {
+    "max_tokens": 8192,
+    "input_cost_per_token": 0.000015,
+    "output_cost_per_token": 0.000075,
+    "cache_creation_input_token_cost": 0.00001875,
+    "cache_read_input_token_cost": 0.0000015,
+    "litellm_provider": "anthropic",
+    "mode": "chat"
+  },
+  "claude-sonnet-4-6": {
+    "max_tokens": 8192,
+    "input_cost_per_token": 0.000003,
+    "output_cost_per_token": 0.000015,
+    "cache_creation_input_token_cost": 0.00000375,
+    "cache_read_input_token_cost": 0.0000003,
+    "litellm_provider": "anthropic",
+    "mode": "chat"
+  },
+  "claude-haiku-4-5": {
+    "max_tokens": 8192,
+    "input_cost_per_token": 0.0000008,
+    "output_cost_per_token": 0.000004,
+    "litellm_provider": "anthropic",
+    "mode": "chat"
+  },
+  "gpt-4-turbo": {
+    "max_tokens": 4096,
+    "input_cost_per_token": 0.00001,
+    "output_cost_per_token": 0.00003,
+    "litellm_provider": "openai",
+    "mode": "chat"
+  }
+}
