@@ -1,9 +1,28 @@
 use color_eyre::Result;
 use rusqlite::{Connection, OptionalExtension};
 
-/// Snapshot of the active 5h session window. Read from the `five_hour_window`
-/// table written by `xclaude-usage.js` (sibling project XClaudeUsage). All
-/// timestamps are **epoch seconds** (singleton row, PK = `id = 1`).
+/// Identifies which singleton table to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowKind {
+    FiveHour,
+    SevenDay,
+}
+
+impl WindowKind {
+    #[allow(dead_code)]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::FiveHour => "5h",
+            Self::SevenDay => "7d",
+        }
+    }
+}
+
+/// Snapshot of the active session window. Read from `five_hour_window` or
+/// `seven_day_window` (both written by `xclaude-usage.js` in XClaudeUsage).
+/// All timestamps are **epoch seconds**, both tables are singletons (`id = 1`).
+/// The 7d table column is `starts_at` (with an `s`); we alias it to `start_at`
+/// in the SELECT so the struct stays unified.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Window {
     pub start_at: i64,
@@ -13,24 +32,29 @@ pub struct Window {
 }
 
 impl Window {
-    /// Reads the singleton row. Returns `Ok(None)` if the row hasn't been
-    /// written yet (e.g. XClaudeUsage hasn't fired the first hook of the
-    /// new schema). Returns `Err` only on real SQLite errors.
-    pub fn current(conn: &Connection) -> Result<Option<Self>> {
-        let row = conn
-            .query_row(
+    /// Reads the singleton row for the given kind. Returns `Ok(None)` if the
+    /// row hasn't been written yet (XClaudeUsage hasn't fired the first hook
+    /// of the new schema). Returns `Err` only on real SQLite errors.
+    pub fn current(conn: &Connection, kind: WindowKind) -> Result<Option<Self>> {
+        let sql = match kind {
+            WindowKind::FiveHour => {
                 "SELECT start_at, resets_at, used_percentage, updated_at \
-                 FROM five_hour_window WHERE id = 1",
-                [],
-                |r| {
-                    Ok(Self {
-                        start_at: r.get(0)?,
-                        resets_at: r.get(1)?,
-                        used_percentage: r.get(2)?,
-                        updated_at: r.get(3)?,
-                    })
-                },
-            )
+                 FROM five_hour_window WHERE id = 1"
+            }
+            WindowKind::SevenDay => {
+                "SELECT starts_at AS start_at, resets_at, used_percentage, updated_at \
+                 FROM seven_day_window WHERE id = 1"
+            }
+        };
+        let row = conn
+            .query_row(sql, [], |r| {
+                Ok(Self {
+                    start_at: r.get(0)?,
+                    resets_at: r.get(1)?,
+                    used_percentage: r.get(2)?,
+                    updated_at: r.get(3)?,
+                })
+            })
             .optional()?;
         Ok(row)
     }
@@ -61,6 +85,13 @@ mod tests {
                 start_at        INTEGER NOT NULL,
                 used_percentage REAL    NOT NULL,
                 updated_at      INTEGER NOT NULL
+            );
+            CREATE TABLE seven_day_window (
+                id              INTEGER PRIMARY KEY CHECK (id = 1),
+                resets_at       INTEGER NOT NULL,
+                starts_at       INTEGER NOT NULL,
+                used_percentage REAL    NOT NULL,
+                updated_at      INTEGER NOT NULL
             );",
         )
         .unwrap();
@@ -68,14 +99,14 @@ mod tests {
     }
 
     #[test]
-    fn current_returns_none_when_table_empty() {
+    fn current_five_hour_returns_none_when_table_empty() {
         let (_dir, conn) = schema_db();
-        let w = Window::current(&conn).unwrap();
+        let w = Window::current(&conn, WindowKind::FiveHour).unwrap();
         assert!(w.is_none());
     }
 
     #[test]
-    fn current_reads_singleton_row() {
+    fn current_five_hour_reads_singleton_row() {
         let (_dir, conn) = schema_db();
         conn.execute(
             "INSERT INTO five_hour_window (id, resets_at, start_at, used_percentage, updated_at) \
@@ -88,11 +119,73 @@ mod tests {
             ],
         )
         .unwrap();
-        let w = Window::current(&conn).unwrap().unwrap();
+        let w = Window::current(&conn, WindowKind::FiveHour)
+            .unwrap()
+            .unwrap();
         assert_eq!(w.start_at, 1_778_359_597);
         assert_eq!(w.resets_at, 1_778_377_597);
         assert!((w.used_percentage - 77.3).abs() < 1e-9);
         assert_eq!(w.updated_at, 1_778_365_597);
+    }
+
+    #[test]
+    fn current_seven_day_returns_none_when_table_empty() {
+        let (_dir, conn) = schema_db();
+        let w = Window::current(&conn, WindowKind::SevenDay).unwrap();
+        assert!(w.is_none());
+    }
+
+    #[test]
+    fn current_seven_day_aliases_starts_at_to_start_at() {
+        let (_dir, conn) = schema_db();
+        conn.execute(
+            "INSERT INTO seven_day_window (id, resets_at, starts_at, used_percentage, updated_at) \
+             VALUES (1, ?, ?, ?, ?)",
+            rusqlite::params![
+                1_778_461_200_i64,
+                1_777_856_400_i64,
+                66.0_f64,
+                1_778_374_857_i64
+            ],
+        )
+        .unwrap();
+        let w = Window::current(&conn, WindowKind::SevenDay)
+            .unwrap()
+            .unwrap();
+        assert_eq!(w.start_at, 1_777_856_400); // sourced from starts_at
+        assert_eq!(w.resets_at, 1_778_461_200);
+        assert!((w.used_percentage - 66.0).abs() < 1e-9);
+        assert_eq!(w.updated_at, 1_778_374_857);
+        // Sanity: exact 7d window length
+        assert_eq!(w.resets_at - w.start_at, 7 * 24 * 3600);
+    }
+
+    #[test]
+    fn current_kinds_are_independent() {
+        let (_dir, conn) = schema_db();
+        // Only the 7d table has a row; querying 5h must return None.
+        conn.execute(
+            "INSERT INTO seven_day_window (id, resets_at, starts_at, used_percentage, updated_at) \
+             VALUES (1, ?, ?, ?, ?)",
+            rusqlite::params![100_i64, 50_i64, 10.0_f64, 80_i64],
+        )
+        .unwrap();
+        assert!(
+            Window::current(&conn, WindowKind::FiveHour)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            Window::current(&conn, WindowKind::SevenDay)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn label_strings() {
+        assert_eq!(WindowKind::FiveHour.label(), "5h");
+        assert_eq!(WindowKind::SevenDay.label(), "7d");
     }
 
     #[test]

@@ -4,9 +4,13 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Widget};
 
-use crate::format::{compact, duration_hms, iso_local_hms};
+use crate::format::{compact, duration_hms, iso_local_dated_hms, iso_local_hms};
 
 pub struct HeaderState {
+    pub title: &'static str,
+    /// `true` shows weekday + day-of-month before each timestamp (used by the
+    /// 7d view, where `started` and `resets` share an `HH:MM:SS`).
+    pub show_date: bool,
     pub started: i64,
     pub resets_at: i64,
     pub now: i64,
@@ -21,11 +25,16 @@ pub struct HeaderState {
 
 impl Widget for &HeaderState {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let stamp = if self.show_date {
+            iso_local_dated_hms
+        } else {
+            iso_local_hms
+        };
         let session = Line::from(vec![Span::styled(
             format!(
                 " started {} · resets {} · {} left ",
-                iso_local_hms(self.started),
-                iso_local_hms(self.resets_at),
+                stamp(self.started),
+                stamp(self.resets_at),
                 duration_hms(self.resets_at - self.now),
             ),
             Style::default().add_modifier(Modifier::BOLD),
@@ -62,7 +71,7 @@ impl Widget for &HeaderState {
         ]);
 
         let para = Paragraph::new(vec![session, output, remaining_line, eta])
-            .block(Block::bordered().title(" session 5h "));
+            .block(Block::bordered().title(self.title));
         para.render(area, buf);
     }
 }
@@ -91,6 +100,8 @@ mod tests {
 
     fn sample(eta: Option<u64>) -> HeaderState {
         HeaderState {
+            title: " session 5h ",
+            show_date: false,
             started: 1_000_000,
             resets_at: 1_000_000 + 18_000,
             now: 1_000_000 + 100,
@@ -113,6 +124,19 @@ mod tests {
         assert!(text.contains("started"), "started missing: {text}");
         assert!(text.contains("resets"), "resets missing: {text}");
         assert!(text.contains("left"), "left missing: {text}");
+    }
+
+    #[test]
+    fn renders_custom_title() {
+        let mut s = sample(Some(7_200));
+        s.title = " session 7d ";
+        let buf = render(&s, 80, 6);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("session 7d"),
+            "expected 7d title; got: {text}"
+        );
+        assert!(!text.contains("session 5h"), "should not show 5h: {text}");
     }
 
     #[test]
