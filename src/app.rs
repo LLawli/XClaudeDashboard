@@ -2,7 +2,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use color_eyre::Result;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind};
+use crossterm::event::{
+    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
+};
 use futures::StreamExt;
 use rusqlite::Connection;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
@@ -19,7 +22,7 @@ use crate::rate::RateState;
 use crate::remote::{self, SyncOutcome};
 use crate::tui::Tui;
 use crate::ui;
-use crate::window::Window;
+use crate::window::{Window, WindowKind};
 
 pub const RATE_WINDOW_MIN: u32 = 15;
 pub const IDLE_THRESHOLD_PER_MIN: f64 = 100.0;
@@ -51,8 +54,12 @@ enum Bg {
 pub struct App {
     pub should_quit: bool,
     pub status: Status,
+    pub view: WindowKind,
     pub now_secs: i64,
     pub tick_ms: u64,
+    /// Last known terminal width — refreshed after each draw and used by
+    /// `translate_mouse` to hit-test tab clicks against the rendered tabs row.
+    pub frame_width: u16,
 
     pub db_path: PathBuf,
     pub cloud_config_path: PathBuf,
@@ -90,8 +97,10 @@ impl App {
         Ok(Self {
             should_quit: false,
             status: Status::Bootstrap,
+            view: WindowKind::FiveHour,
             now_secs: now_secs(),
             tick_ms: args.tick_ms,
+            frame_width: 0,
             db_path,
             cloud_config_path,
             prices_path,
@@ -115,6 +124,7 @@ impl App {
 
         // Initial state from disk + decide whether to fetch pricing.
         self.now_secs = now_secs();
+        self.frame_width = terminal.size().map(|s| s.width).unwrap_or(80);
         if let Err(e) = self.refresh_from_db() {
             self.footer = FooterStatus::Error(format!("db read: {e}"));
         }
@@ -147,22 +157,23 @@ impl App {
                 _ = tokio::signal::ctrl_c() => Action::Quit,
             };
 
+            // Skip the redraw on Noop (e.g. mouse-move spam) — saves work
+            // without freezing the countdown, since the Tick branch always
+            // produces a non-Noop action.
+            let needs_redraw = !matches!(action, Action::Noop);
             self.update(action)?;
-            terminal.draw(|f| ui::render(f, self))?;
+            if needs_redraw {
+                terminal.draw(|f| ui::render(f, self))?;
+                self.frame_width = terminal.size().map(|s| s.width).unwrap_or(self.frame_width);
+            }
         }
         Ok(())
     }
 
     fn translate_event(&self, ev: Event) -> Action {
-        let Event::Key(key) = ev else {
-            return Action::Noop;
-        };
-        if key.kind != KeyEventKind::Press {
-            return Action::Noop;
-        }
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
-            KeyCode::Char('r') => Action::RemoteFetch,
+        match ev {
+            Event::Key(key) => translate_key(key),
+            Event::Mouse(m) => translate_mouse(m, self.frame_width),
             _ => Action::Noop,
         }
     }
@@ -179,6 +190,15 @@ impl App {
                 self.update_status();
             }
             Action::RemoteFetch => self.spawn_remote_sync(),
+            Action::SwitchView(kind) => {
+                if self.view != kind {
+                    self.view = kind;
+                    if let Err(e) = self.refresh_from_db() {
+                        self.footer = FooterStatus::Error(format!("db read: {e}"));
+                    }
+                    self.update_status();
+                }
+            }
             Action::Noop => {}
         }
         Ok(())
@@ -208,9 +228,10 @@ impl App {
     }
 
     fn refresh_from_db(&mut self) -> Result<()> {
+        let view = self.view;
         let (window, aggregate, samples) = {
             let conn = self.conn()?;
-            let window = Window::current(conn)?;
+            let window = Window::current(conn, view)?;
             let (agg, samples) = if let Some(w) = window {
                 (
                     WindowAggregate::fetch(conn, w.start_at, w.resets_at)?,
@@ -238,9 +259,10 @@ impl App {
     }
 
     fn refresh_window_only(&mut self) -> Result<()> {
+        let view = self.view;
         let window = {
             let conn = self.conn()?;
-            Window::current(conn)?
+            Window::current(conn, view)?
         };
         self.window = window;
         Ok(())
@@ -342,6 +364,37 @@ impl App {
             self.db = Some(db::open(&self.db_path)?);
         }
         Ok(self.db.as_ref().unwrap())
+    }
+}
+
+fn translate_key(key: KeyEvent) -> Action {
+    if key.kind != KeyEventKind::Press {
+        return Action::Noop;
+    }
+    // Ctrl+C in raw mode is delivered as a KeyEvent (not SIGINT), so handle
+    // it as an explicit quit alongside `q` / `Esc`.
+    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
+        return Action::Quit;
+    }
+    match key.code {
+        KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
+        KeyCode::Char('r') => Action::RemoteFetch,
+        KeyCode::Char('s') => Action::SwitchView(WindowKind::SevenDay),
+        KeyCode::Char('h') => Action::SwitchView(WindowKind::FiveHour),
+        _ => Action::Noop,
+    }
+}
+
+fn translate_mouse(m: MouseEvent, width: u16) -> Action {
+    if !matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
+        return Action::Noop;
+    }
+    if m.row != ui::TABS_ROW {
+        return Action::Noop;
+    }
+    match ui::tab_hit(m.column, width) {
+        Some(kind) => Action::SwitchView(kind),
+        None => Action::Noop,
     }
 }
 

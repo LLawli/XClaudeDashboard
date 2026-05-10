@@ -31,13 +31,20 @@ pub fn compact(n: u64) -> String {
     }
 }
 
-/// `HH:MM:SS` from a duration in seconds. Negatives clamp to zero.
+/// `HH:MM:SS` from a duration in seconds, with `Nd` prefix when ≥ 1 day.
+/// Negatives clamp to zero. Examples: `00:00:59`, `02:14:54`, `6d 14:00:00`.
 pub fn duration_hms(seconds: i64) -> String {
     let s = seconds.max(0);
-    let h = s / 3600;
-    let m = (s % 3600) / 60;
-    let sec = s % 60;
-    format!("{h:02}:{m:02}:{sec:02}")
+    let days = s / 86_400;
+    let rem = s % 86_400;
+    let h = rem / 3600;
+    let m = (rem % 3600) / 60;
+    let sec = rem % 60;
+    if days > 0 {
+        format!("{days}d {h:02}:{m:02}:{sec:02}")
+    } else {
+        format!("{h:02}:{m:02}:{sec:02}")
+    }
 }
 
 /// Local-timezone `HH:MM:SS` for an epoch-seconds instant.
@@ -50,6 +57,21 @@ pub fn iso_local_hms(epoch_secs: i64) -> String {
     dt.to_offset(local_offset())
         .format(&fmt)
         .unwrap_or_else(|_| "??:??:??".into())
+}
+
+/// Local-timezone `Wkd DD HH:MM:SS` for an epoch-seconds instant.
+/// Used in the 7d view, where `started` and `resets` share the same `HH:MM`
+/// but live a week apart — the weekday + day prefix disambiguates them.
+/// Returns `??? ?? ??:??:??` if the input is out of range.
+pub fn iso_local_dated_hms(epoch_secs: i64) -> String {
+    let Ok(dt) = OffsetDateTime::from_unix_timestamp(epoch_secs) else {
+        return "??? ?? ??:??:??".into();
+    };
+    let fmt =
+        format_description!("[weekday repr:short] [day padding:zero] [hour]:[minute]:[second]");
+    dt.to_offset(local_offset())
+        .format(&fmt)
+        .unwrap_or_else(|_| "??? ?? ??:??:??".into())
 }
 
 #[cfg(test)]
@@ -105,16 +127,41 @@ mod tests {
     }
 
     #[test]
+    fn duration_hms_with_days() {
+        assert_eq!(duration_hms(86_400), "1d 00:00:00");
+        assert_eq!(duration_hms(86_400 + 3661), "1d 01:01:01");
+        assert_eq!(duration_hms(6 * 86_400 + 14 * 3600), "6d 14:00:00");
+    }
+
+    #[test]
     fn iso_local_hms_invalid_returns_placeholder() {
         assert_eq!(iso_local_hms(i64::MAX), "??:??:??");
     }
 
     #[test]
     fn iso_local_hms_format_shape() {
+        // Expected: "HH:MM:SS" — 8 chars
         let s = iso_local_hms(1_778_377_597);
-        assert_eq!(s.len(), 8);
+        assert_eq!(s.len(), 8, "got: {s:?}");
         let bytes = s.as_bytes();
         assert_eq!(bytes[2], b':');
         assert_eq!(bytes[5], b':');
+    }
+
+    #[test]
+    fn iso_local_dated_hms_invalid_returns_placeholder() {
+        assert_eq!(iso_local_dated_hms(i64::MAX), "??? ?? ??:??:??");
+    }
+
+    #[test]
+    fn iso_local_dated_hms_format_shape() {
+        // Expected: "Wkd DD HH:MM:SS" — 15 chars, e.g. "Sun 09 17:46:37"
+        let s = iso_local_dated_hms(1_778_377_597);
+        assert_eq!(s.len(), 15, "got: {s:?}");
+        let bytes = s.as_bytes();
+        assert_eq!(bytes[3], b' ');
+        assert_eq!(bytes[6], b' ');
+        assert_eq!(bytes[9], b':');
+        assert_eq!(bytes[12], b':');
     }
 }

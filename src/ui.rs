@@ -1,5 +1,5 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
@@ -9,11 +9,30 @@ use crate::pricing::cost_for;
 use crate::widgets::header::HeaderState;
 use crate::widgets::legend::{LegendRow, build_table};
 use crate::widgets::stacked_bar::StackedBar;
+use crate::window::WindowKind;
+
+/// Tabs row is always the first row of the frame.
+pub const TABS_ROW: u16 = 0;
+
+/// Hit-test for a click on the tabs row. Each tab claims half of the available
+/// width; clicks inside the row always resolve to one tab or the other (no
+/// gap), but clicks past `width` (or with `width == 0`) return `None`.
+pub fn tab_hit(col: u16, width: u16) -> Option<WindowKind> {
+    if width == 0 || col >= width {
+        return None;
+    }
+    if col < width / 2 {
+        Some(WindowKind::FiveHour)
+    } else {
+        Some(WindowKind::SevenDay)
+    }
+}
 
 pub fn render(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1), // tabs
             Constraint::Length(6), // header block (4 lines + 2 borders)
             Constraint::Length(1), // stacked bar
             Constraint::Length(1), // spacer
@@ -22,15 +41,44 @@ pub fn render(frame: &mut Frame, app: &App) {
         ])
         .split(frame.area());
 
-    render_header(frame, app, chunks[0]);
-    render_stacked_bar(frame, app, chunks[1]);
-    render_legend(frame, app, chunks[3]);
-    render_footer(frame, app, chunks[4]);
+    render_tabs(frame, app, chunks[0]);
+    render_header(frame, app, chunks[1]);
+    render_stacked_bar(frame, app, chunks[2]);
+    render_legend(frame, app, chunks[4]);
+    render_footer(frame, app, chunks[5]);
+}
+
+fn render_tabs(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let halves = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
+
+    let active = Style::default()
+        .bg(Color::DarkGray)
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    let inactive = Style::default().fg(Color::DarkGray);
+    let (style_5h, style_7d) = match app.view {
+        WindowKind::FiveHour => (active, inactive),
+        WindowKind::SevenDay => (inactive, active),
+    };
+
+    let tab_5h = Paragraph::new("5h (h)")
+        .alignment(Alignment::Center)
+        .style(style_5h);
+    let tab_7d = Paragraph::new("7d (s)")
+        .alignment(Alignment::Center)
+        .style(style_7d);
+
+    frame.render_widget(tab_5h, halves[0]);
+    frame.render_widget(tab_7d, halves[1]);
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let title = view_title(app.view);
     let Some(window) = app.window else {
-        let block = Block::bordered().title(" session 5h ");
+        let block = Block::bordered().title(title);
         let para = Paragraph::new("waiting for first hook from XClaudeUsage…").block(block);
         frame.render_widget(para, area);
         return;
@@ -50,6 +98,8 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let eta_color = eta_color(eta_seconds, until_reset);
 
     let state = HeaderState {
+        title,
+        show_date: matches!(app.view, WindowKind::SevenDay),
         started: window.start_at,
         resets_at: window.resets_at,
         now: app.now_secs,
@@ -62,6 +112,13 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         rate_window_min: RATE_WINDOW_MIN,
     };
     frame.render_widget(&state, area);
+}
+
+fn view_title(view: WindowKind) -> &'static str {
+    match view {
+        WindowKind::FiveHour => " session 5h ",
+        WindowKind::SevenDay => " session 7d ",
+    }
 }
 
 fn render_stacked_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -143,12 +200,13 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         }
         _ => Style::default().fg(Color::DarkGray),
     };
+    let dim = Style::default().add_modifier(Modifier::DIM);
     let line = Line::from(vec![
         Span::styled(status_text, status_style),
         Span::raw("  ·  "),
-        Span::styled("q quit", Style::default().add_modifier(Modifier::DIM)),
+        Span::styled("q quit", dim),
         Span::raw("  ·  "),
-        Span::styled("r refetch", Style::default().add_modifier(Modifier::DIM)),
+        Span::styled("r refetch", dim),
     ]);
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -219,5 +277,36 @@ mod tests {
     #[test]
     fn eta_color_after_reset_is_dark_gray() {
         assert_eq!(eta_color(Some(60), -10), Color::DarkGray);
+    }
+
+    #[test]
+    fn tab_hit_first_half() {
+        assert_eq!(tab_hit(0, 80), Some(WindowKind::FiveHour));
+        assert_eq!(tab_hit(39, 80), Some(WindowKind::FiveHour));
+    }
+
+    #[test]
+    fn tab_hit_second_half() {
+        assert_eq!(tab_hit(40, 80), Some(WindowKind::SevenDay));
+        assert_eq!(tab_hit(79, 80), Some(WindowKind::SevenDay));
+    }
+
+    #[test]
+    fn tab_hit_past_width_is_none() {
+        assert_eq!(tab_hit(80, 80), None);
+        assert_eq!(tab_hit(100, 80), None);
+    }
+
+    #[test]
+    fn tab_hit_zero_width_is_none() {
+        assert_eq!(tab_hit(0, 0), None);
+        assert_eq!(tab_hit(10, 0), None);
+    }
+
+    #[test]
+    fn tab_hit_odd_width_splits_floor() {
+        // width=81 → first half is cols 0..40 (40 cols), second half 40..81
+        assert_eq!(tab_hit(39, 81), Some(WindowKind::FiveHour));
+        assert_eq!(tab_hit(40, 81), Some(WindowKind::SevenDay));
     }
 }
