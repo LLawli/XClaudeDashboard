@@ -295,8 +295,8 @@ fn verbose_chip_text(verbose: bool) -> &'static str {
 /// hit-test so we don't need to round-trip the rendered range through `App`.
 /// `start == end` means the chip is off-screen (frame too narrow).
 pub fn footer_verbose_chip_range(app: &App, frame_width: u16) -> (u16, u16) {
-    let prefix_len = footer_status_text(app).chars().count()
-        + "  ·  q quit  ·  r refetch  ·  ".chars().count();
+    let prefix_len =
+        footer_status_text(app).chars().count() + "  ·  q quit  ·  r refetch  ·  ".chars().count();
     let chip = verbose_chip_text(app.verbose);
     let chip_len = chip.chars().count();
     let start = prefix_len.min(frame_width as usize) as u16;

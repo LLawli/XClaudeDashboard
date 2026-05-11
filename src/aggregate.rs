@@ -526,9 +526,39 @@ mod tests {
     #[test]
     fn device_aggregate_only_cloud_cache_buckets_by_slug() {
         let (_dir, conn) = schema_db();
-        insert_cache(&conn, 1, "luka-desktop", "claude-opus-4-7", 100, 200, 50, 30, 1000);
-        insert_cache(&conn, 2, "luka-notebook", "claude-opus-4-7", 10, 20, 5, 3, 1500);
-        insert_cache(&conn, 3, "luka-desktop", "claude-sonnet-4-6", 1, 2, 0, 0, 1500);
+        insert_cache(
+            &conn,
+            1,
+            "luka-desktop",
+            "claude-opus-4-7",
+            100,
+            200,
+            50,
+            30,
+            1000,
+        );
+        insert_cache(
+            &conn,
+            2,
+            "luka-notebook",
+            "claude-opus-4-7",
+            10,
+            20,
+            5,
+            3,
+            1500,
+        );
+        insert_cache(
+            &conn,
+            3,
+            "luka-desktop",
+            "claude-sonnet-4-6",
+            1,
+            2,
+            0,
+            0,
+            1500,
+        );
 
         let agg = DeviceAggregate::fetch(&conn, 0, 2000).unwrap();
         assert!(!agg.per_device.contains_key(LOCAL_DEVICE));
@@ -547,7 +577,17 @@ mod tests {
     fn device_aggregate_mixes_local_and_remote_without_merging() {
         let (_dir, conn) = schema_db();
         insert_usage(&conn, "claude-opus-4-7", "output", 100, 1000);
-        insert_cache(&conn, 1, "luka-desktop", "claude-opus-4-7", 0, 50, 0, 0, 1500);
+        insert_cache(
+            &conn,
+            1,
+            "luka-desktop",
+            "claude-opus-4-7",
+            0,
+            50,
+            0,
+            0,
+            1500,
+        );
 
         let agg = DeviceAggregate::fetch(&conn, 0, 2000).unwrap();
         assert_eq!(agg.per_device.len(), 2);
