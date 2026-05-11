@@ -7,5 +7,6 @@ pub enum Action {
     Quit,
     RemoteFetch,
     SwitchView(WindowKind),
+    ToggleVerbose,
     Noop,
 }
