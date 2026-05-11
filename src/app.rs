@@ -11,7 +11,7 @@ use rusqlite::Connection;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::time;
 
-use crate::aggregate::WindowAggregate;
+use crate::aggregate::{DeviceAggregate, WindowAggregate};
 use crate::cli::Cli;
 use crate::colors::ColorMap;
 use crate::config;
@@ -60,6 +60,10 @@ pub struct App {
     /// Last known terminal width — refreshed after each draw and used by
     /// `translate_mouse` to hit-test tab clicks against the rendered tabs row.
     pub frame_width: u16,
+    pub frame_height: u16,
+    /// When true, the legend groups by device (`local` + remote slugs);
+    /// when false, it groups by model. Toggled with `v` or the footer chip.
+    pub verbose: bool,
 
     pub db_path: PathBuf,
     pub cloud_config_path: PathBuf,
@@ -68,8 +72,10 @@ pub struct App {
     pub last_data_version: Option<i64>,
     pub window: Option<Window>,
     pub aggregate: WindowAggregate,
+    pub device_aggregate: DeviceAggregate,
     pub rate: RateState,
     pub colors: ColorMap,
+    pub device_colors: ColorMap,
     pub pricing: PricingCache,
 
     pub fetching_remote: bool,
@@ -101,14 +107,18 @@ impl App {
             now_secs: now_secs(),
             tick_ms: args.tick_ms,
             frame_width: 0,
+            frame_height: 0,
+            verbose: false,
             db_path,
             cloud_config_path,
             prices_path,
             last_data_version: None,
             window: None,
             aggregate: WindowAggregate::default(),
+            device_aggregate: DeviceAggregate::default(),
             rate: RateState::new(),
             colors: ColorMap::new(),
+            device_colors: ColorMap::new(),
             pricing,
             fetching_remote: false,
             fetching_prices: false,
@@ -124,7 +134,9 @@ impl App {
 
         // Initial state from disk + decide whether to fetch pricing.
         self.now_secs = now_secs();
-        self.frame_width = terminal.size().map(|s| s.width).unwrap_or(80);
+        let size = terminal.size().ok();
+        self.frame_width = size.map(|s| s.width).unwrap_or(80);
+        self.frame_height = size.map(|s| s.height).unwrap_or(24);
         if let Err(e) = self.refresh_from_db() {
             self.footer = FooterStatus::Error(format!("db read: {e}"));
         }
@@ -164,7 +176,10 @@ impl App {
             self.update(action)?;
             if needs_redraw {
                 terminal.draw(|f| ui::render(f, self))?;
-                self.frame_width = terminal.size().map(|s| s.width).unwrap_or(self.frame_width);
+                if let Ok(sz) = terminal.size() {
+                    self.frame_width = sz.width;
+                    self.frame_height = sz.height;
+                }
             }
         }
         Ok(())
@@ -173,7 +188,7 @@ impl App {
     fn translate_event(&self, ev: Event) -> Action {
         match ev {
             Event::Key(key) => translate_key(key),
-            Event::Mouse(m) => translate_mouse(m, self.frame_width),
+            Event::Mouse(m) => translate_mouse(m, self.frame_width, self.frame_height, self),
             _ => Action::Noop,
         }
     }
@@ -199,6 +214,7 @@ impl App {
                     self.update_status();
                 }
             }
+            Action::ToggleVerbose => self.verbose = !self.verbose,
             Action::Noop => {}
         }
         Ok(())
@@ -229,18 +245,23 @@ impl App {
 
     fn refresh_from_db(&mut self) -> Result<()> {
         let view = self.view;
-        let (window, aggregate, samples) = {
+        let (window, aggregate, device_aggregate, samples) = {
             let conn = self.conn()?;
             let window = Window::current(conn, view)?;
-            let (agg, samples) = if let Some(w) = window {
+            let (agg, dev_agg, samples) = if let Some(w) = window {
                 (
                     WindowAggregate::fetch(conn, w.start_at, w.resets_at)?,
+                    DeviceAggregate::fetch(conn, w.start_at, w.resets_at)?,
                     crate::aggregate::output_samples(conn, w.start_at, w.resets_at)?,
                 )
             } else {
-                (WindowAggregate::default(), Vec::new())
+                (
+                    WindowAggregate::default(),
+                    DeviceAggregate::default(),
+                    Vec::new(),
+                )
             };
-            (window, agg, samples)
+            (window, agg, dev_agg, samples)
         };
 
         self.window = window;
@@ -248,12 +269,18 @@ impl App {
             for model in aggregate.per_model.keys() {
                 self.colors.assign(model);
             }
+            for device in device_aggregate.per_device.keys() {
+                self.device_colors.assign(device);
+            }
             self.aggregate = aggregate;
+            self.device_aggregate = device_aggregate;
             self.rate.replace_from_samples(samples);
         } else {
             self.aggregate = WindowAggregate::default();
+            self.device_aggregate = DeviceAggregate::default();
             self.rate = RateState::new();
             self.colors.reset();
+            self.device_colors.reset();
         }
         Ok(())
     }
@@ -275,6 +302,7 @@ impl App {
             // Window flipped — colors are scoped per-window per the design.
             if matches!(new, Status::Active) && matches!(prev, Status::Closed) {
                 self.colors.reset();
+                self.device_colors.reset();
             }
         }
         self.status = new;
@@ -381,21 +409,28 @@ fn translate_key(key: KeyEvent) -> Action {
         KeyCode::Char('r') => Action::RemoteFetch,
         KeyCode::Char('s') => Action::SwitchView(WindowKind::SevenDay),
         KeyCode::Char('h') => Action::SwitchView(WindowKind::FiveHour),
+        KeyCode::Char('v') => Action::ToggleVerbose,
         _ => Action::Noop,
     }
 }
 
-fn translate_mouse(m: MouseEvent, width: u16) -> Action {
+fn translate_mouse(m: MouseEvent, width: u16, height: u16, app: &App) -> Action {
     if !matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
         return Action::Noop;
     }
-    if m.row != ui::TABS_ROW {
-        return Action::Noop;
+    if m.row == ui::TABS_ROW {
+        return match ui::tab_hit(m.column, width) {
+            Some(kind) => Action::SwitchView(kind),
+            None => Action::Noop,
+        };
     }
-    match ui::tab_hit(m.column, width) {
-        Some(kind) => Action::SwitchView(kind),
-        None => Action::Noop,
+    if height > 0 && m.row == height - 1 {
+        let (start, end) = ui::footer_verbose_chip_range(app, width);
+        if start < end && m.column >= start && m.column < end {
+            return Action::ToggleVerbose;
+        }
     }
+    Action::Noop
 }
 
 /// Pure state-transition: `Active` iff there's a window whose `resets_at` is

@@ -7,7 +7,7 @@ use ratatui::widgets::{Block, Paragraph};
 use crate::app::{App, FooterStatus, IDLE_THRESHOLD_PER_MIN, RATE_WINDOW_MIN, Status};
 use crate::pricing::cost_for;
 use crate::widgets::header::HeaderState;
-use crate::widgets::legend::{LegendRow, build_table};
+use crate::widgets::legend::{DeviceRow, LegendRow, build_device_table, build_table};
 use crate::widgets::stacked_bar::StackedBar;
 use crate::window::WindowKind;
 
@@ -122,6 +122,24 @@ fn view_title(view: WindowKind) -> &'static str {
 }
 
 fn render_stacked_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    if app.verbose {
+        let total = app.device_aggregate.grand_total_tokens();
+        if total == 0 {
+            return;
+        }
+        let slices: Vec<(Color, f64)> = app
+            .device_aggregate
+            .per_device
+            .keys()
+            .map(|device| {
+                let color = app.device_colors.get(device).unwrap_or(Color::DarkGray);
+                let frac = app.device_aggregate.totals(device).total() as f64 / total as f64;
+                (color, frac)
+            })
+            .collect();
+        frame.render_widget(StackedBar { slices: &slices }, area);
+        return;
+    }
     let total: u64 = app.aggregate.per_model.values().map(|t| t.total()).sum();
     if total == 0 {
         return;
@@ -139,6 +157,14 @@ fn render_stacked_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
 }
 
 fn render_legend(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    if app.verbose {
+        render_device_legend(frame, app, area);
+    } else {
+        render_model_legend(frame, app, area);
+    }
+}
+
+fn render_model_legend(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let total: u64 = app.aggregate.per_model.values().map(|t| t.total()).sum();
     let rows: Vec<LegendRow> = app
         .aggregate
@@ -176,8 +202,69 @@ fn render_legend(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     frame.render_widget(table, area);
 }
 
+fn render_device_legend(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let total = app.device_aggregate.grand_total_tokens();
+    let rows: Vec<DeviceRow> = app
+        .device_aggregate
+        .per_device
+        .keys()
+        .map(|device| {
+            let totals = app.device_aggregate.totals(device);
+            let color = app.device_colors.get(device).unwrap_or(Color::DarkGray);
+            let pct = if total == 0 {
+                0.0
+            } else {
+                totals.total() as f64 / total as f64 * 100.0
+            };
+            let cost = app.device_aggregate.cost(device, &app.pricing);
+            DeviceRow {
+                device,
+                device_color: color,
+                pct,
+                input: totals.input,
+                output: totals.output,
+                cache_creation: totals.cache_creation,
+                cache_read: totals.cache_read,
+                cost,
+            }
+        })
+        .collect();
+    let table = build_device_table(&rows);
+    frame.render_widget(table, area);
+}
+
 fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let status_text = match &app.footer {
+    let status_text = footer_status_text(app);
+    let status_style = match &app.footer {
+        FooterStatus::Error(_) => Style::default().fg(Color::Red),
+        FooterStatus::SyncingRemote | FooterStatus::SyncingPrices => {
+            Style::default().fg(Color::Yellow)
+        }
+        _ => Style::default().fg(Color::DarkGray),
+    };
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let chip_style = if app.verbose {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        dim
+    };
+    let line = Line::from(vec![
+        Span::styled(status_text, status_style),
+        Span::raw("  ·  "),
+        Span::styled("q quit", dim),
+        Span::raw("  ·  "),
+        Span::styled("r refetch", dim),
+        Span::raw("  ·  "),
+        Span::styled(verbose_chip_text(app.verbose), chip_style),
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+fn footer_status_text(app: &App) -> String {
+    match &app.footer {
         FooterStatus::Idle => match app.status {
             Status::Bootstrap => "starting…".to_string(),
             Status::Active => "idle".to_string(),
@@ -192,23 +279,29 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             format!("synced prices · {models} models")
         }
         FooterStatus::Error(e) => format!("error: {e}"),
-    };
-    let status_style = match &app.footer {
-        FooterStatus::Error(_) => Style::default().fg(Color::Red),
-        FooterStatus::SyncingRemote | FooterStatus::SyncingPrices => {
-            Style::default().fg(Color::Yellow)
-        }
-        _ => Style::default().fg(Color::DarkGray),
-    };
-    let dim = Style::default().add_modifier(Modifier::DIM);
-    let line = Line::from(vec![
-        Span::styled(status_text, status_style),
-        Span::raw("  ·  "),
-        Span::styled("q quit", dim),
-        Span::raw("  ·  "),
-        Span::styled("r refetch", dim),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+    }
+}
+
+fn verbose_chip_text(verbose: bool) -> &'static str {
+    if verbose {
+        "[v] verbose ✓"
+    } else {
+        "[v] verbose"
+    }
+}
+
+/// Returns `(start, end)` column range (half-open, `end` exclusive) of the
+/// `[v] verbose` chip rendered by [`render_footer`]. Used by the mouse
+/// hit-test so we don't need to round-trip the rendered range through `App`.
+/// `start == end` means the chip is off-screen (frame too narrow).
+pub fn footer_verbose_chip_range(app: &App, frame_width: u16) -> (u16, u16) {
+    let prefix_len = footer_status_text(app).chars().count()
+        + "  ·  q quit  ·  r refetch  ·  ".chars().count();
+    let chip = verbose_chip_text(app.verbose);
+    let chip_len = chip.chars().count();
+    let start = prefix_len.min(frame_width as usize) as u16;
+    let end = (prefix_len + chip_len).min(frame_width as usize) as u16;
+    (start, end)
 }
 
 /// Mirrors xclaude-usage.js logic: limit = used / (used_pct / 100). Falls back

@@ -3,6 +3,13 @@ use std::collections::BTreeMap;
 use color_eyre::Result;
 use rusqlite::Connection;
 
+use crate::pricing::{PricingCache, cost_for};
+
+/// Bucket name used for tokens originating from this device (`token_usage`
+/// table). Remote devices are keyed by their `device_id` slug as stored in
+/// `cloud_cache`.
+pub const LOCAL_DEVICE: &str = "local";
+
 #[derive(Debug, Clone, Default)]
 pub struct ModelTotals {
     pub input: u64,
@@ -124,6 +131,125 @@ impl WindowAggregate {
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.per_model.is_empty()
+    }
+}
+
+/// Same time window as [`WindowAggregate`] but grouped by device instead of
+/// just by model. Two-level map: `device → model → ModelTotals`. The local
+/// device (rows from `token_usage`) is keyed by [`LOCAL_DEVICE`]; remote
+/// devices come from `cloud_cache` keyed by `device_id`.
+#[derive(Debug, Clone, Default)]
+pub struct DeviceAggregate {
+    pub per_device: BTreeMap<String, BTreeMap<String, ModelTotals>>,
+}
+
+impl DeviceAggregate {
+    pub fn fetch(conn: &Connection, start_at: i64, end_at: i64) -> Result<Self> {
+        let mut per_device: BTreeMap<String, BTreeMap<String, ModelTotals>> = BTreeMap::new();
+
+        let mut stmt = conn.prepare(
+            "SELECT model, token_type, COALESCE(SUM(quantity), 0) AS qty
+             FROM token_usage
+             WHERE executed_at >= ? AND executed_at < ?
+             GROUP BY model, token_type",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![start_at, end_at], |row| {
+            let model: String = row.get(0)?;
+            let token_type: String = row.get(1)?;
+            let qty: i64 = row.get(2)?;
+            Ok((model, token_type, qty))
+        })?;
+        for row in rows {
+            let (model, tt_str, qty) = row?;
+            if let Some(tt) = TokenType::parse(&tt_str) {
+                per_device
+                    .entry(LOCAL_DEVICE.to_string())
+                    .or_default()
+                    .entry(model)
+                    .or_default()
+                    .add(tt, qty.max(0) as u64);
+            }
+        }
+
+        let mut stmt = conn.prepare(
+            "SELECT device_id, model,
+                    COALESCE(SUM(input), 0) AS input,
+                    COALESCE(SUM(output), 0) AS output,
+                    COALESCE(SUM(cache_creation), 0) AS cc,
+                    COALESCE(SUM(cache_read), 0) AS cr
+             FROM cloud_cache
+             WHERE executed_at >= ? AND executed_at < ?
+             GROUP BY device_id, model",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![start_at, end_at], |row| {
+            let device: String = row.get(0)?;
+            let model: String = row.get(1)?;
+            let input: i64 = row.get(2)?;
+            let output: i64 = row.get(3)?;
+            let cc: i64 = row.get(4)?;
+            let cr: i64 = row.get(5)?;
+            Ok((device, model, input, output, cc, cr))
+        })?;
+        for row in rows {
+            let (device, model, input, output, cc, cr) = row?;
+            let entry = per_device
+                .entry(device)
+                .or_default()
+                .entry(model)
+                .or_default();
+            entry.input += input.max(0) as u64;
+            entry.output += output.max(0) as u64;
+            entry.cache_creation += cc.max(0) as u64;
+            entry.cache_read += cr.max(0) as u64;
+        }
+
+        Ok(Self { per_device })
+    }
+
+    /// Sum every model's totals for a single device. Returns `Default` when the
+    /// device key is unknown.
+    pub fn totals(&self, device: &str) -> ModelTotals {
+        let Some(by_model) = self.per_device.get(device) else {
+            return ModelTotals::default();
+        };
+        let mut out = ModelTotals::default();
+        for t in by_model.values() {
+            out.input += t.input;
+            out.output += t.output;
+            out.cache_creation += t.cache_creation;
+            out.cache_read += t.cache_read;
+        }
+        out
+    }
+
+    /// Cost in USD for a device — sum of `cost_for(model_price, totals)` over
+    /// every model the device used. `None` when *no* model used by the device
+    /// has a known price (every individual model with a known price still
+    /// contributes; unknown ones contribute 0).
+    pub fn cost(&self, device: &str, pricing: &PricingCache) -> Option<f64> {
+        let by_model = self.per_device.get(device)?;
+        let mut total = 0.0;
+        let mut any_known = false;
+        for (model, t) in by_model {
+            if let Some(p) = pricing.lookup(model) {
+                any_known = true;
+                total += cost_for(p, t.input, t.output, t.cache_creation, t.cache_read);
+            }
+        }
+        any_known.then_some(total)
+    }
+
+    pub fn grand_total_tokens(&self) -> u64 {
+        self.per_device
+            .values()
+            .flat_map(|by_model| by_model.values())
+            .map(|t| t.total())
+            .sum()
+    }
+
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.per_device.is_empty()
     }
 }
 
@@ -348,5 +474,129 @@ mod tests {
         insert_usage(&conn, "sonnet", "cache_read", 30, 1000);
         let agg = WindowAggregate::fetch(&conn, 0, 2000).unwrap();
         assert_eq!(agg.total_tokens(), 60);
+    }
+
+    use crate::pricing::{ModelPrice, PricingCache};
+    use std::collections::HashMap;
+
+    fn pricing(entries: &[(&str, f64, f64, f64, f64)]) -> PricingCache {
+        let mut models = HashMap::new();
+        for (k, i, o, cc, cr) in entries {
+            models.insert(
+                (*k).to_string(),
+                ModelPrice {
+                    input: *i,
+                    output: *o,
+                    cache_creation: *cc,
+                    cache_read: *cr,
+                },
+            );
+        }
+        PricingCache {
+            fetched_at: 0,
+            source_url: String::new(),
+            models,
+        }
+    }
+
+    #[test]
+    fn device_aggregate_empty_db() {
+        let (_dir, conn) = schema_db();
+        let agg = DeviceAggregate::fetch(&conn, 0, i64::MAX).unwrap();
+        assert!(agg.is_empty());
+        assert_eq!(agg.grand_total_tokens(), 0);
+    }
+
+    #[test]
+    fn device_aggregate_only_token_usage_buckets_as_local() {
+        let (_dir, conn) = schema_db();
+        insert_usage(&conn, "claude-opus-4-7", "input", 100, 1000);
+        insert_usage(&conn, "claude-opus-4-7", "output", 200, 1000);
+        insert_usage(&conn, "claude-sonnet-4-6", "output", 50, 1500);
+
+        let agg = DeviceAggregate::fetch(&conn, 0, 2000).unwrap();
+        assert_eq!(agg.per_device.len(), 1);
+        assert!(agg.per_device.contains_key(LOCAL_DEVICE));
+        let totals = agg.totals(LOCAL_DEVICE);
+        assert_eq!(totals.input, 100);
+        assert_eq!(totals.output, 250);
+        assert_eq!(agg.grand_total_tokens(), 350);
+    }
+
+    #[test]
+    fn device_aggregate_only_cloud_cache_buckets_by_slug() {
+        let (_dir, conn) = schema_db();
+        insert_cache(&conn, 1, "luka-desktop", "claude-opus-4-7", 100, 200, 50, 30, 1000);
+        insert_cache(&conn, 2, "luka-notebook", "claude-opus-4-7", 10, 20, 5, 3, 1500);
+        insert_cache(&conn, 3, "luka-desktop", "claude-sonnet-4-6", 1, 2, 0, 0, 1500);
+
+        let agg = DeviceAggregate::fetch(&conn, 0, 2000).unwrap();
+        assert!(!agg.per_device.contains_key(LOCAL_DEVICE));
+        assert_eq!(agg.per_device.len(), 2);
+        let desk = agg.totals("luka-desktop");
+        assert_eq!(desk.input, 101);
+        assert_eq!(desk.output, 202);
+        assert_eq!(desk.cache_creation, 50);
+        assert_eq!(desk.cache_read, 30);
+        let nb = agg.totals("luka-notebook");
+        assert_eq!(nb.input, 10);
+        assert_eq!(nb.output, 20);
+    }
+
+    #[test]
+    fn device_aggregate_mixes_local_and_remote_without_merging() {
+        let (_dir, conn) = schema_db();
+        insert_usage(&conn, "claude-opus-4-7", "output", 100, 1000);
+        insert_cache(&conn, 1, "luka-desktop", "claude-opus-4-7", 0, 50, 0, 0, 1500);
+
+        let agg = DeviceAggregate::fetch(&conn, 0, 2000).unwrap();
+        assert_eq!(agg.per_device.len(), 2);
+        assert_eq!(agg.totals(LOCAL_DEVICE).output, 100);
+        assert_eq!(agg.totals("luka-desktop").output, 50);
+    }
+
+    #[test]
+    fn device_aggregate_respects_window() {
+        let (_dir, conn) = schema_db();
+        insert_usage(&conn, "opus", "output", 999, 500);
+        insert_usage(&conn, "opus", "output", 100, 1500);
+        insert_cache(&conn, 1, "dev", "opus", 0, 999, 0, 0, 500);
+        insert_cache(&conn, 2, "dev", "opus", 0, 50, 0, 0, 1500);
+
+        let agg = DeviceAggregate::fetch(&conn, 1000, 2000).unwrap();
+        assert_eq!(agg.totals(LOCAL_DEVICE).output, 100);
+        assert_eq!(agg.totals("dev").output, 50);
+    }
+
+    #[test]
+    fn device_aggregate_cost_sums_known_models() {
+        let (_dir, conn) = schema_db();
+        // 1 input @ 10 + 1 output @ 100 = 110, only opus has a price
+        insert_usage(&conn, "claude-opus-4-7", "input", 1, 1000);
+        insert_usage(&conn, "claude-opus-4-7", "output", 1, 1000);
+        insert_usage(&conn, "unknown-model", "output", 999, 1000);
+
+        let agg = DeviceAggregate::fetch(&conn, 0, 2000).unwrap();
+        let p = pricing(&[("claude-opus-4-7", 10.0, 100.0, 0.0, 0.0)]);
+        assert_eq!(agg.cost(LOCAL_DEVICE, &p), Some(110.0));
+    }
+
+    #[test]
+    fn device_aggregate_cost_none_when_no_known_models() {
+        let (_dir, conn) = schema_db();
+        insert_usage(&conn, "unknown", "output", 100, 1000);
+        let agg = DeviceAggregate::fetch(&conn, 0, 2000).unwrap();
+        let p = pricing(&[]);
+        assert_eq!(agg.cost(LOCAL_DEVICE, &p), None);
+    }
+
+    #[test]
+    fn device_aggregate_grand_total_tokens_sums_all_buckets() {
+        let (_dir, conn) = schema_db();
+        insert_usage(&conn, "opus", "input", 10, 1000);
+        insert_usage(&conn, "opus", "output", 20, 1000);
+        insert_cache(&conn, 1, "dev", "opus", 5, 5, 0, 0, 1000);
+        let agg = DeviceAggregate::fetch(&conn, 0, 2000).unwrap();
+        assert_eq!(agg.grand_total_tokens(), 40);
     }
 }
