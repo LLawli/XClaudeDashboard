@@ -25,7 +25,7 @@ pub fn build_table<'a>(rows: &'a [LegendRow<'a>]) -> Table<'a> {
         Cell::from("read"),
         Cell::from("cost"),
     ])
-    .style(crate::style::bubble_theme().title);
+    .style(crate::style::heading());
 
     let body: Vec<Row> = rows
         .iter()
@@ -82,7 +82,7 @@ pub fn build_device_table<'a>(rows: &'a [DeviceRow<'a>]) -> Table<'a> {
         Cell::from("read"),
         Cell::from("cost"),
     ])
-    .style(crate::style::bubble_theme().title);
+    .style(crate::style::heading());
 
     let body: Vec<Row> = rows
         .iter()

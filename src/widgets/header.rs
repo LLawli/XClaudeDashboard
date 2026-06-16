@@ -59,6 +59,7 @@ impl Widget for &HeaderState {
         };
         let block = theme
             .titled_block(self.title)
+            .title_style(crate::style::heading())
             .title_top(Line::from(annotation).right_aligned())
             .padding(Padding::horizontal(2));
         let inner = block.inner(area);

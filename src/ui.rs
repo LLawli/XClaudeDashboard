@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Padding, Paragraph, Sparkline};
+use ratatui::widgets::{Block, Padding, Paragraph, Sparkline};
 use ratatui_bubbletea_components::{Help, KeyBinding, SpinnerFrames};
 
 use crate::app::{App, FooterStatus, IDLE_THRESHOLD_PER_MIN, RATE_WINDOW_MIN, Status};
@@ -23,7 +23,9 @@ pub const TABS_ROW: u16 = 0;
 const FOOTER_HINTS: [(&str, &str); 2] = [("q", "quit"), ("r", "refetch")];
 
 const HERO_H: u16 = 6;
-const BREAKDOWN_H: u16 = 3;
+const BREAKDOWN_H: u16 = 4;
+/// Capped height for the burn-rate card (kept calm, not screen-dominating).
+const BURN_H: u16 = 16;
 /// Minutes of history shown in the burn-rate sparkline.
 const BURN_WINDOW_MIN: u32 = 60;
 
@@ -57,6 +59,15 @@ pub fn tab_hit(col: u16, width: u16) -> Option<WindowKind> {
     } else {
         Some(WindowKind::SevenDay)
     }
+}
+
+/// A rounded, padded section card with a neutral-bold title (accent pink stays
+/// reserved for the active tab + the verbose chip).
+fn section_block<'a>(title: &'a str) -> Block<'a> {
+    bubble_theme()
+        .titled_block(title)
+        .title_style(crate::style::heading())
+        .padding(Padding::horizontal(1))
 }
 
 #[derive(Clone, Copy)]
@@ -95,27 +106,28 @@ pub fn render(frame: &mut Frame, app: &App) {
     // enough vertical room (it is the first thing to drop on short terminals).
     let series = app.rate.per_minute_series(app.now_secs, BURN_WINDOW_MIN);
     let nonempty = series.iter().filter(|&&v| v > 0).count();
-    let show_spark = body.height >= 30 && nonempty >= 3;
+    let show_spark = body.height >= 34 && nonempty >= 3;
 
     let legend_h = legend_height(app);
 
+    // FlexTop + FlexBot center the card stack between the pinned tabs (row 0)
+    // and the bottom-anchored footer, so a sparse dashboard reads as a calm,
+    // composed column rather than a top-heavy block or a screen-tall chart.
     let mut slots: Vec<(Slot, Constraint)> = vec![
         (Slot::Tabs, Constraint::Length(1)),
         (Slot::Gap, Constraint::Length(1)),
+        (Slot::Flex, Constraint::Min(0)),
         (Slot::Hero, Constraint::Length(HERO_H)),
         (Slot::Gap, Constraint::Length(1)),
         (Slot::Breakdown, Constraint::Length(BREAKDOWN_H)),
         (Slot::Gap, Constraint::Length(1)),
     ];
     if show_spark {
-        // The sparkline card absorbs all vertical slack (looks great tall).
-        slots.push((Slot::BurnRate, Constraint::Min(8)));
+        slots.push((Slot::BurnRate, Constraint::Length(BURN_H)));
         slots.push((Slot::Gap, Constraint::Length(1)));
-        slots.push((Slot::Legend, Constraint::Length(legend_h)));
-    } else {
-        slots.push((Slot::Legend, Constraint::Length(legend_h)));
-        slots.push((Slot::Flex, Constraint::Min(0)));
     }
+    slots.push((Slot::Legend, Constraint::Length(legend_h)));
+    slots.push((Slot::Flex, Constraint::Min(0)));
 
     let cons: Vec<Constraint> = slots.iter().map(|(_, c)| *c).collect();
     let rects = Layout::vertical(cons).split(body);
@@ -151,8 +163,7 @@ fn render_empty(frame: &mut Frame, app: &App, content: Rect) {
 
     render_tabs(frame, app, rects[0]);
 
-    let theme = bubble_theme();
-    let block = theme.titled_block(view_title(app.view));
+    let block = section_block(view_title(app.view));
     let inner = block.inner(rects[2]);
     frame.render_widget(block, rects[2]);
     render_centered_note(frame, inner, "waiting for first hook from XClaudeUsage…");
@@ -265,7 +276,7 @@ fn breakdown_slices(app: &App) -> Vec<(Color, f64, String)> {
 
 fn render_breakdown(frame: &mut Frame, app: &App, area: Rect) {
     let theme = bubble_theme();
-    let block = theme.titled_block(" breakdown ").padding(Padding::horizontal(1));
+    let block = section_block(" breakdown ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -278,16 +289,13 @@ fn render_breakdown(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let bar_row = Rect {
-        x: inner.x,
-        y: inner.y,
-        width: inner.width,
-        height: 1,
-    };
+    // inner is 2 rows: the proportion bar, then a colored chip legend.
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(inner);
+    let bar_row = rows[0];
 
     if let [(color, _frac, name)] = slices.as_slice() {
-        // A single series is always 100% — label it instead of drawing a bare slab.
-        let name_w = (name.chars().count() as u16 + 1).min(inner.width);
+        // A single series is always 100% — label it inline; no chip row needed.
+        let name_w = (name.chars().count() as u16 + 1).min(bar_row.width);
         let cols = Layout::horizontal([
             Constraint::Length(name_w),
             Constraint::Min(4),
@@ -306,16 +314,25 @@ fn render_breakdown(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         let sb: Vec<(Color, f64)> = slices.iter().map(|(c, f, _)| (*c, *f)).collect();
         frame.render_widget(StackedBar { slices: &sb }, bar_row);
+        // Colored chip legend so the bar's segments are actually readable.
+        let chips: Vec<Span> = slices
+            .iter()
+            .flat_map(|(c, f, name)| {
+                [
+                    Span::styled("● ", Style::new().fg(*c)),
+                    Span::styled(format!("{name} {:.0}%   ", f * 100.0), theme.muted),
+                ]
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(Line::from(chips)), rows[1]);
     }
 }
 
 fn render_burnrate(frame: &mut Frame, area: Rect, series: &[u64]) {
     let theme = bubble_theme();
     let annotation = Span::styled(format!(" tokens/min · last {BURN_WINDOW_MIN}m "), theme.muted);
-    let block = theme
-        .titled_block(" burn rate ")
-        .title_top(Line::from(annotation).right_aligned())
-        .padding(Padding::horizontal(1));
+    let block =
+        section_block(" burn rate ").title_top(Line::from(annotation).right_aligned());
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width < 10 || inner.height == 0 {
@@ -326,9 +343,11 @@ fn render_burnrate(frame: &mut Frame, area: Rect, series: &[u64]) {
     let now = series.last().copied().unwrap_or(0);
     let peak = series.iter().copied().max().unwrap_or(0);
 
+    // Calm informational blue (not the loud accent) so the chart reads as
+    // context, with the gauge staying the hero.
     let spark = Sparkline::default()
         .data(series.to_vec())
-        .style(Style::new().fg(theme.palette.accent));
+        .style(Style::new().fg(theme.palette.focused_border));
     frame.render_widget(spark, cols[0]);
 
     let caps = Paragraph::new(vec![
@@ -341,7 +360,7 @@ fn render_burnrate(frame: &mut Frame, area: Rect, series: &[u64]) {
 fn render_legend(frame: &mut Frame, app: &App, area: Rect) {
     let theme = bubble_theme();
     let title = if app.verbose { " devices " } else { " models " };
-    let block = theme.titled_block(title).padding(Padding::horizontal(1));
+    let block = section_block(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -725,6 +744,16 @@ mod tests {
             },
         );
         app.colors.assign("claude-opus-4-8");
+        app.aggregate.per_model.insert(
+            "claude-haiku-4-5-20251001".to_string(),
+            ModelTotals {
+                input: 12_000,
+                output: 38_000,
+                cache_creation: 416_000,
+                cache_read: 5_100_000,
+            },
+        );
+        app.colors.assign("claude-haiku-4-5-20251001");
         let samples: Vec<(i64, u64)> = (0..60)
             .map(|m| (now - (60 - m) * 60, ((m as u64 * 37) % 40 + 5) * 1_000))
             .collect();

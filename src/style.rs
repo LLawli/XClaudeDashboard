@@ -9,7 +9,7 @@
 //! call [`bubble_theme`] inside each render function instead of threading a
 //! reference everywhere.
 
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui_bubbletea_theme::BubbleTheme;
 
 /// The Charm-inspired theme used for every chrome element in the dashboard.
@@ -32,6 +32,14 @@ pub fn severity_color(eta_seconds: Option<u64>, until_reset: i64) -> Color {
         Some(s) if (s as i64) >= until_reset / 2 => p.warning,
         Some(_) => p.error,
     }
+}
+
+/// Neutral bold style for section/card titles and table headers. Keeps the
+/// accent pink reserved for the two truly interactive bits (the active tab and
+/// the verbose chip) so the chrome does not drown in pink.
+#[must_use]
+pub fn heading() -> Style {
+    bubble_theme().text.add_modifier(Modifier::BOLD)
 }
 
 /// A copy of the theme whose `accent` style (the color the `Progress` widget

@@ -8,13 +8,13 @@ use ratatui::style::Color;
 /// order of appearance via [`ColorMap`].
 const PALETTE: [Color; 10] = [
     Color::Rgb(137, 220, 235), // sky
-    Color::Rgb(203, 166, 247), // mauve
+    Color::Rgb(190, 140, 248), // mauve (punchier, less washed)
     Color::Rgb(250, 179, 135), // peach
     Color::Rgb(166, 227, 161), // green
     Color::Rgb(137, 180, 250), // blue
     Color::Rgb(235, 160, 172), // maroon
     Color::Rgb(148, 226, 213), // teal
-    Color::Rgb(180, 190, 254), // lavender
+    Color::Rgb(168, 168, 252), // lavender (punchier)
     Color::Rgb(249, 226, 175), // yellow
     Color::Rgb(242, 205, 205), // flamingo
 ];
