@@ -2,20 +2,25 @@ use std::collections::BTreeMap;
 
 use ratatui::style::Color;
 
+/// Categorical series palette (per model / per device), curated muted
+/// true-color hues (Catppuccin Mocha) that harmonize with the Charm chrome and
+/// stay clear of the semantic green/amber/red/accent-pink slots. Assigned by
+/// order of appearance via [`ColorMap`].
 const PALETTE: [Color; 10] = [
-    Color::Cyan,
-    Color::Magenta,
-    Color::Yellow,
-    Color::Green,
-    Color::Blue,
-    Color::Red,
-    Color::LightCyan,
-    Color::LightMagenta,
-    Color::LightYellow,
-    Color::LightGreen,
+    Color::Rgb(137, 220, 235), // sky
+    Color::Rgb(203, 166, 247), // mauve
+    Color::Rgb(250, 179, 135), // peach
+    Color::Rgb(166, 227, 161), // green
+    Color::Rgb(137, 180, 250), // blue
+    Color::Rgb(235, 160, 172), // maroon
+    Color::Rgb(148, 226, 213), // teal
+    Color::Rgb(180, 190, 254), // lavender
+    Color::Rgb(249, 226, 175), // yellow
+    Color::Rgb(242, 205, 205), // flamingo
 ];
 
-const FALLBACK: Color = Color::DarkGray;
+/// 11th+ series fall back to a muted overlay gray.
+const FALLBACK: Color = Color::Rgb(108, 112, 134);
 
 /// Order-of-appearance assignment of palette colors to model names.
 /// Re-created on each new 5h window (`reset()`).
@@ -75,9 +80,9 @@ mod tests {
     #[test]
     fn first_three_models_get_first_three_colors() {
         let mut cm = ColorMap::new();
-        assert_eq!(cm.assign("opus"), Color::Cyan);
-        assert_eq!(cm.assign("sonnet"), Color::Magenta);
-        assert_eq!(cm.assign("haiku"), Color::Yellow);
+        assert_eq!(cm.assign("opus"), PALETTE[0]);
+        assert_eq!(cm.assign("sonnet"), PALETTE[1]);
+        assert_eq!(cm.assign("haiku"), PALETTE[2]);
     }
 
     #[test]
@@ -96,7 +101,7 @@ mod tests {
         cm.assign("b");
         cm.reset();
         assert!(cm.is_empty());
-        assert_eq!(cm.assign("a"), Color::Cyan);
+        assert_eq!(cm.assign("a"), PALETTE[0]);
     }
 
     #[test]

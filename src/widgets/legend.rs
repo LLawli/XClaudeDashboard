@@ -1,5 +1,5 @@
 use ratatui::layout::Constraint;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::widgets::{Cell, Row, Table};
 
 use crate::format::compact;
@@ -25,7 +25,7 @@ pub fn build_table<'a>(rows: &'a [LegendRow<'a>]) -> Table<'a> {
         Cell::from("read"),
         Cell::from("cost"),
     ])
-    .style(Style::default().add_modifier(Modifier::BOLD));
+    .style(crate::style::bubble_theme().title);
 
     let body: Vec<Row> = rows
         .iter()
@@ -82,7 +82,7 @@ pub fn build_device_table<'a>(rows: &'a [DeviceRow<'a>]) -> Table<'a> {
         Cell::from("read"),
         Cell::from("cost"),
     ])
-    .style(Style::default().add_modifier(Modifier::BOLD));
+    .style(crate::style::bubble_theme().title);
 
     let body: Vec<Row> = rows
         .iter()

@@ -7,6 +7,8 @@ use crossterm::event::{
     MouseEventKind,
 };
 use futures::StreamExt;
+use ratatui::layout::Rect;
+use ratatui_bubbletea_components::SpinnerState;
 use rusqlite::Connection;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::time;
@@ -61,6 +63,9 @@ pub struct App {
     /// `translate_mouse` to hit-test tab clicks against the rendered tabs row.
     pub frame_width: u16,
     pub frame_height: u16,
+    /// Animation state for the refresh spinner shown in the spacer row while a
+    /// background sync is in flight. Advanced on each `Action::Tick`.
+    pub spinner: SpinnerState,
     /// When true, the legend groups by device (`local` + remote slugs);
     /// when false, it groups by model. Toggled with `v` or the footer chip.
     pub verbose: bool,
@@ -108,6 +113,7 @@ impl App {
             tick_ms: args.tick_ms,
             frame_width: 0,
             frame_height: 0,
+            spinner: SpinnerState::new(),
             verbose: false,
             db_path,
             cloud_config_path,
@@ -221,6 +227,9 @@ impl App {
     }
 
     fn tick(&mut self) -> Result<()> {
+        if spinner_active(self.fetching_remote, self.fetching_prices) {
+            self.spinner.tick();
+        }
         let dv_changed = self.check_data_version()?;
         if dv_changed {
             if let Err(e) = self.refresh_from_db() {
@@ -418,14 +427,20 @@ fn translate_mouse(m: MouseEvent, width: u16, height: u16, app: &App) -> Action 
     if !matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
         return Action::Noop;
     }
+    // Clicks are in absolute terminal columns; the UI lives in a centered
+    // content column, so translate into that column's space before hit-testing.
+    let content = ui::content_rect(Rect::new(0, 0, width, height));
     if m.row == ui::TABS_ROW {
-        return match ui::tab_hit(m.column, width) {
-            Some(kind) => Action::SwitchView(kind),
-            None => Action::Noop,
-        };
+        if m.column >= content.x {
+            if let Some(kind) = ui::tab_hit(m.column - content.x, content.width) {
+                return Action::SwitchView(kind);
+            }
+        }
+        return Action::Noop;
     }
     if height > 0 && m.row == height - 1 {
-        let (start, end) = ui::footer_verbose_chip_range(app, width);
+        let (start, end) = ui::footer_verbose_chip_range(app.verbose, content.width);
+        let (start, end) = (content.x + start, content.x + end);
         if start < end && m.column >= start && m.column < end {
             return Action::ToggleVerbose;
         }
@@ -442,6 +457,13 @@ pub fn next_status(prev: Status, window: Option<&Window>, now_secs: i64) -> Stat
         Some(w) if w.resets_at > now_secs => Status::Active,
         _ => Status::Closed,
     }
+}
+
+/// Whether the refresh spinner should animate: true while any background sync
+/// (remote pull/push or pricing fetch) is in flight. Kept as a pure function so
+/// both the tick handler and the renderer agree on visibility.
+pub fn spinner_active(fetching_remote: bool, fetching_prices: bool) -> bool {
+    fetching_remote || fetching_prices
 }
 
 pub fn now_secs() -> i64 {
@@ -501,5 +523,13 @@ mod tests {
     fn next_status_closed_stays_closed_when_window_still_past() {
         let w = win(100);
         assert_eq!(next_status(Status::Closed, Some(&w), 500), Status::Closed);
+    }
+
+    #[test]
+    fn spinner_active_only_while_fetching() {
+        assert!(!spinner_active(false, false));
+        assert!(spinner_active(true, false));
+        assert!(spinner_active(false, true));
+        assert!(spinner_active(true, true));
     }
 }

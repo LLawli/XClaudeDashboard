@@ -63,6 +63,23 @@ impl RateState {
         let per_sec = rate / 60.0;
         Some((remaining as f64 / per_sec).round() as u64)
     }
+
+    /// Per-minute output totals for the last `window_min` minutes ending at
+    /// `now_secs`, oldest first; minutes with no samples are `0`. Feeds the
+    /// burn-rate sparkline. Empty when `window_min == 0`.
+    pub fn per_minute_series(&self, now_secs: i64, window_min: u32) -> Vec<u64> {
+        if window_min == 0 {
+            return Vec::new();
+        }
+        let now_bucket = now_secs.div_euclid(60);
+        let n = i64::from(window_min);
+        (0..n)
+            .map(|i| {
+                let bucket = now_bucket - (n - 1 - i);
+                self.buckets.get(&bucket).copied().unwrap_or(0)
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -136,6 +153,21 @@ mod tests {
         assert!(!r.is_empty());
         r.replace_from_samples(std::iter::empty::<(i64, u64)>());
         assert!(r.is_empty());
+    }
+
+    #[test]
+    fn per_minute_series_is_oldest_first_with_zero_gaps() {
+        let mut r = RateState::new();
+        r.replace_from_samples([(at_min(98), 100), (at_min(100), 300)]);
+        // window 5 ending at min 100 → buckets [96, 97, 98, 99, 100]
+        let s = r.per_minute_series(at_min(100), 5);
+        assert_eq!(s, vec![0, 0, 100, 0, 300]);
+    }
+
+    #[test]
+    fn per_minute_series_empty_window_is_empty() {
+        let r = RateState::new();
+        assert!(r.per_minute_series(at_min(100), 0).is_empty());
     }
 
     #[test]
