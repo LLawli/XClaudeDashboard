@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Padding, Paragraph, Sparkline};
+use ratatui::widgets::{Block, Cell, Padding, Paragraph, Row, Sparkline, Table};
 use ratatui_bubbletea_components::{Help, KeyBinding, SpinnerFrames};
 
 use crate::app::{App, FooterStatus, IDLE_THRESHOLD_PER_MIN, RATE_WINDOW_MIN, Status};
@@ -375,12 +375,26 @@ fn render_legend(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     if let Some(t) = total {
-        let line = Line::from(vec![
-            Span::styled("total  ", theme.muted),
-            // Matches the legend cost cell format (`${c:>7.2}`) so the column lines up.
-            Span::styled(format!("${t:>7.2}"), theme.text),
+        // Render the total as a row with the SAME column widths as the table
+        // above, so "total" and the cost line up under the read/cost columns
+        // instead of floating at the card edge.
+        use crate::widgets::legend::{
+            DEVICE_NAME_W, LEGEND_COLUMN_SPACING, MODEL_NAME_W, legend_widths, right_cell,
+        };
+        let name_w = if app.verbose { DEVICE_NAME_W } else { MODEL_NAME_W };
+        let row = Row::new(vec![
+            Cell::from(""),
+            Cell::from(""),
+            Cell::from(""),
+            Cell::from(""),
+            Cell::from(""),
+            right_cell("total").style(theme.muted),
+            right_cell(format!("${t:>7.2}")).style(theme.text),
         ]);
-        frame.render_widget(Paragraph::new(line).alignment(Alignment::Right), parts[1]);
+        frame.render_widget(
+            Table::new([row], legend_widths(name_w)).column_spacing(LEGEND_COLUMN_SPACING),
+            parts[1],
+        );
     }
 }
 

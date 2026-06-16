@@ -1,8 +1,37 @@
-use ratatui::layout::Constraint;
+use ratatui::layout::{Alignment, Constraint};
 use ratatui::style::{Color, Style};
+use ratatui::text::Line;
 use ratatui::widgets::{Cell, Row, Table};
 
 use crate::format::compact;
+
+/// Inter-column spacing shared by the legend table and the total row.
+pub const LEGEND_COLUMN_SPACING: u16 = 2;
+/// Name-column width for the per-model table: wide enough for a full
+/// `claude-...` id so the numbers sit beside the name, not across a wide gap.
+pub const MODEL_NAME_W: u16 = 28;
+/// Name-column width for the per-device table (slugs are shorter).
+pub const DEVICE_NAME_W: u16 = 20;
+
+/// Shared legend column widths; `name_w` is the fixed first (name) column. The
+/// name column is fixed rather than greedy so the metrics line up next to the
+/// names instead of being shoved to the far right edge.
+pub fn legend_widths(name_w: u16) -> [Constraint; 7] {
+    [
+        Constraint::Length(name_w),
+        Constraint::Length(7),  // %
+        Constraint::Length(8),  // in
+        Constraint::Length(8),  // out
+        Constraint::Length(9),  // cache
+        Constraint::Length(9),  // read
+        Constraint::Length(10), // cost
+    ]
+}
+
+/// A right-aligned cell, for clean tabular reading of numeric columns.
+pub fn right_cell(s: impl Into<String>) -> Cell<'static> {
+    Cell::from(Line::from(s.into()).alignment(Alignment::Right))
+}
 
 pub struct LegendRow<'a> {
     pub model: &'a str,
@@ -18,12 +47,12 @@ pub struct LegendRow<'a> {
 pub fn build_table<'a>(rows: &'a [LegendRow<'a>]) -> Table<'a> {
     let header = Row::new(vec![
         Cell::from("model"),
-        Cell::from("%"),
-        Cell::from("in"),
-        Cell::from("out"),
-        Cell::from("cache"),
-        Cell::from("read"),
-        Cell::from("cost"),
+        right_cell("%"),
+        right_cell("in"),
+        right_cell("out"),
+        right_cell("cache"),
+        right_cell("read"),
+        right_cell("cost"),
     ])
     .style(crate::style::heading());
 
@@ -36,29 +65,19 @@ pub fn build_table<'a>(rows: &'a [LegendRow<'a>]) -> Table<'a> {
             };
             Row::new(vec![
                 Cell::from(r.model).style(Style::default().fg(r.model_color)),
-                Cell::from(format!("{:>5.1}", r.pct)),
-                Cell::from(compact(r.input)),
-                Cell::from(compact(r.output)),
-                Cell::from(compact(r.cache_creation)),
-                Cell::from(compact(r.cache_read)),
-                Cell::from(cost_text),
+                right_cell(format!("{:.1}", r.pct)),
+                right_cell(compact(r.input)),
+                right_cell(compact(r.output)),
+                right_cell(compact(r.cache_creation)),
+                right_cell(compact(r.cache_read)),
+                right_cell(cost_text),
             ])
         })
         .collect();
 
-    Table::new(
-        body,
-        [
-            Constraint::Min(20),
-            Constraint::Length(6),
-            Constraint::Length(6),
-            Constraint::Length(7),
-            Constraint::Length(7),
-            Constraint::Length(6),
-            Constraint::Length(8),
-        ],
-    )
-    .header(header)
+    Table::new(body, legend_widths(MODEL_NAME_W))
+        .header(header)
+        .column_spacing(LEGEND_COLUMN_SPACING)
 }
 
 pub struct DeviceRow<'a> {
@@ -75,12 +94,12 @@ pub struct DeviceRow<'a> {
 pub fn build_device_table<'a>(rows: &'a [DeviceRow<'a>]) -> Table<'a> {
     let header = Row::new(vec![
         Cell::from("device"),
-        Cell::from("%"),
-        Cell::from("in"),
-        Cell::from("out"),
-        Cell::from("cache"),
-        Cell::from("read"),
-        Cell::from("cost"),
+        right_cell("%"),
+        right_cell("in"),
+        right_cell("out"),
+        right_cell("cache"),
+        right_cell("read"),
+        right_cell("cost"),
     ])
     .style(crate::style::heading());
 
@@ -93,29 +112,19 @@ pub fn build_device_table<'a>(rows: &'a [DeviceRow<'a>]) -> Table<'a> {
             };
             Row::new(vec![
                 Cell::from(r.device).style(Style::default().fg(r.device_color)),
-                Cell::from(format!("{:>5.1}", r.pct)),
-                Cell::from(compact(r.input)),
-                Cell::from(compact(r.output)),
-                Cell::from(compact(r.cache_creation)),
-                Cell::from(compact(r.cache_read)),
-                Cell::from(cost_text),
+                right_cell(format!("{:.1}", r.pct)),
+                right_cell(compact(r.input)),
+                right_cell(compact(r.output)),
+                right_cell(compact(r.cache_creation)),
+                right_cell(compact(r.cache_read)),
+                right_cell(cost_text),
             ])
         })
         .collect();
 
-    Table::new(
-        body,
-        [
-            Constraint::Min(20),
-            Constraint::Length(6),
-            Constraint::Length(6),
-            Constraint::Length(7),
-            Constraint::Length(7),
-            Constraint::Length(6),
-            Constraint::Length(8),
-        ],
-    )
-    .header(header)
+    Table::new(body, legend_widths(DEVICE_NAME_W))
+        .header(header)
+        .column_spacing(LEGEND_COLUMN_SPACING)
 }
 
 #[cfg(test)]
