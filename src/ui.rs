@@ -10,7 +10,7 @@ use crate::format::compact;
 use crate::pricing::cost_for;
 use crate::style::{bubble_theme, severity_color};
 use crate::widgets::header::HeaderState;
-use crate::widgets::legend::{DeviceRow, LegendRow, build_device_table, build_table};
+use crate::widgets::legend::{DeviceRow, LegendRow, build_device_table, build_table, short_model};
 use crate::widgets::stacked_bar::StackedBar;
 use crate::window::WindowKind;
 
@@ -295,7 +295,8 @@ fn render_breakdown(frame: &mut Frame, app: &App, area: Rect) {
 
     if let [(color, _frac, name)] = slices.as_slice() {
         // A single series is always 100% — label it inline; no chip row needed.
-        let name_w = (name.chars().count() as u16 + 1).min(bar_row.width);
+        let short = short_model(name);
+        let name_w = (short.chars().count() as u16 + 1).min(bar_row.width);
         let cols = Layout::horizontal([
             Constraint::Length(name_w),
             Constraint::Min(4),
@@ -303,7 +304,7 @@ fn render_breakdown(frame: &mut Frame, app: &App, area: Rect) {
         ])
         .split(bar_row);
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(name.clone(), Style::new().fg(*color)))),
+            Paragraph::new(Line::from(Span::styled(short, Style::new().fg(*color)))),
             cols[0],
         );
         frame.render_widget(StackedBar { slices: &[(*color, 1.0)] }, cols[1]);
@@ -320,7 +321,7 @@ fn render_breakdown(frame: &mut Frame, app: &App, area: Rect) {
             .flat_map(|(c, f, name)| {
                 [
                     Span::styled("● ", Style::new().fg(*c)),
-                    Span::styled(format!("{name} {:.0}%   ", f * 100.0), theme.muted),
+                    Span::styled(format!("{} {:.0}%   ", short_model(name), f * 100.0), theme.muted),
                 ]
             })
             .collect();
@@ -358,8 +359,15 @@ fn render_burnrate(frame: &mut Frame, area: Rect, series: &[u64]) {
 }
 
 fn render_legend(frame: &mut Frame, app: &App, area: Rect) {
+    use crate::widgets::legend::{
+        DEVICE_NAME_W, LEGEND_COLUMN_SPACING, MODEL_NAME_W, legend_widths, right_cell,
+    };
     let theme = bubble_theme();
-    let title = if app.verbose { " devices " } else { " models " };
+    let (title, name_w) = if app.verbose {
+        (" devices ", DEVICE_NAME_W)
+    } else {
+        (" models ", MODEL_NAME_W)
+    };
     let block = section_block(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -367,6 +375,9 @@ fn render_legend(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    // Left-aligned (names start at the card's left padding, consistent with the
+    // breakdown chips above); the compact table left-packs and any leftover
+    // width is plain right margin.
     let parts = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
     let total = if app.verbose {
         render_device_legend(frame, app, parts[0])
@@ -375,13 +386,8 @@ fn render_legend(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     if let Some(t) = total {
-        // Render the total as a row with the SAME column widths as the table
-        // above, so "total" and the cost line up under the read/cost columns
-        // instead of floating at the card edge.
-        use crate::widgets::legend::{
-            DEVICE_NAME_W, LEGEND_COLUMN_SPACING, MODEL_NAME_W, legend_widths, right_cell,
-        };
-        let name_w = if app.verbose { DEVICE_NAME_W } else { MODEL_NAME_W };
+        // Same column widths as the table above so "total" + cost align under
+        // the read/cost columns.
         let row = Row::new(vec![
             Cell::from(""),
             Cell::from(""),
