@@ -7,7 +7,6 @@ use crossterm::event::{
     MouseEventKind,
 };
 use futures::StreamExt;
-use ratatui::layout::Rect;
 use ratatui_bubbletea_components::SpinnerState;
 use rusqlite::Connection;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
@@ -427,20 +426,14 @@ fn translate_mouse(m: MouseEvent, width: u16, height: u16, app: &App) -> Action 
     if !matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
         return Action::Noop;
     }
-    // Clicks are in absolute terminal columns; the UI lives in a centered
-    // content column, so translate into that column's space before hit-testing.
-    let content = ui::content_rect(Rect::new(0, 0, width, height));
     if m.row == ui::TABS_ROW {
-        if m.column >= content.x {
-            if let Some(kind) = ui::tab_hit(m.column - content.x, content.width) {
-                return Action::SwitchView(kind);
-            }
-        }
-        return Action::Noop;
+        return match ui::tab_hit(m.column, width) {
+            Some(kind) => Action::SwitchView(kind),
+            None => Action::Noop,
+        };
     }
     if height > 0 && m.row == height - 1 {
-        let (start, end) = ui::footer_verbose_chip_range(app.verbose, content.width);
-        let (start, end) = (content.x + start, content.x + end);
+        let (start, end) = ui::footer_verbose_chip_range(app.verbose, width);
         if start < end && m.column >= start && m.column < end {
             return Action::ToggleVerbose;
         }
@@ -531,5 +524,141 @@ mod tests {
         assert!(spinner_active(true, false));
         assert!(spinner_active(false, true));
         assert!(spinner_active(true, true));
+    }
+
+    /// A minimal App in the empty (no-window) state, for render smoke tests.
+    fn smoke_app() -> App {
+        App {
+            should_quit: false,
+            status: Status::Bootstrap,
+            view: WindowKind::FiveHour,
+            now_secs: 1_000_000,
+            tick_ms: 200,
+            frame_width: 80,
+            frame_height: 24,
+            spinner: SpinnerState::new(),
+            verbose: false,
+            db_path: PathBuf::from("/tmp/xclaude-smoke.db"),
+            cloud_config_path: PathBuf::from("/tmp/xclaude-smoke.json"),
+            prices_path: PathBuf::from("/tmp/xclaude-smoke-prices.json"),
+            last_data_version: None,
+            window: None,
+            aggregate: WindowAggregate::default(),
+            device_aggregate: DeviceAggregate::default(),
+            rate: RateState::new(),
+            colors: ColorMap::new(),
+            device_colors: ColorMap::new(),
+            pricing: PricingCache::default(),
+            fetching_remote: false,
+            fetching_prices: false,
+            footer: FooterStatus::Idle,
+            db: None,
+            bg_tx: None,
+        }
+    }
+
+    fn render_at(app: &App, w: u16, h: u16) {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal.draw(|f| crate::ui::render(f, app)).unwrap();
+    }
+
+    #[test]
+    fn render_does_not_panic_across_sizes_and_modes() {
+        let mut app = smoke_app();
+        // Normal, tiny, and 1x1 frames must all render without panicking
+        // (layout splits, card inner rects, and the right-anchored chip range
+        // all have to stay sane at degenerate sizes).
+        for (w, h) in [(80, 24), (120, 40), (40, 10), (1, 1), (10, 3)] {
+            render_at(&app, w, h);
+        }
+        // verbose (device) view + a syncing state (spinner branch) too
+        app.verbose = true;
+        app.fetching_remote = true;
+        app.footer = FooterStatus::SyncingRemote;
+        render_at(&app, 80, 24);
+    }
+
+    fn populated_app() -> App {
+        let mut app = smoke_app();
+        app.window = Some(Window {
+            start_at: 1_000_000,
+            resets_at: 1_000_000 + 18_000,
+            used_percentage: 78.1,
+            updated_at: 0,
+        });
+        app.status = Status::Active;
+        app.now_secs = 1_000_600;
+        let opus = crate::aggregate::ModelTotals {
+            input: 12_000,
+            output: 192_000,
+            cache_creation: 3_000,
+            cache_read: 67_000,
+        };
+        let mut agg = WindowAggregate::default();
+        agg.per_model.insert("claude-opus-4-8".into(), opus);
+        agg.total_output = 192_000;
+        app.aggregate = agg;
+        app.colors.assign("claude-opus-4-8");
+        app.pricing.models.insert(
+            "claude-opus-4-8".to_string(),
+            crate::pricing::ModelPrice {
+                input: 0.000_003,
+                output: 0.000_015,
+                cache_creation: 0.000_003_75,
+                cache_read: 0.000_000_3,
+            },
+        );
+        app.rate.replace_from_samples([
+            (1_000_300, 30_000),
+            (1_000_360, 25_000),
+            (1_000_420, 40_000),
+        ]);
+        app
+    }
+
+    #[test]
+    fn render_populated_does_not_panic() {
+        let app = populated_app();
+        // wide (gauge shows), narrow (gauge dropped), and tiny frames
+        for (w, h) in [(190, 50), (160, 40), (100, 30), (80, 24), (40, 10)] {
+            render_at(&app, w, h);
+        }
+    }
+
+    #[test]
+    fn render_gauge_handles_abnormal_percentages() {
+        // `used_percentage` is read from an external SQLite column, so the
+        // usage Gauge must survive NaN/inf/negative/over-100 without panicking
+        // (Gauge::ratio asserts 0..=1 and would otherwise crash terminal.draw).
+        for pct in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -5.0, 0.0, 150.0] {
+            let mut app = populated_app();
+            if let Some(w) = app.window.as_mut() {
+                w.used_percentage = pct;
+            }
+            render_at(&app, 160, 40); // wide → exercises the gauge path
+        }
+    }
+
+    /// Dev helper: `cargo test preview_dump -- --ignored --nocapture` prints the
+    /// rendered dashboard as text. Ignored so it never runs in the normal suite.
+    #[test]
+    #[ignore]
+    fn preview_dump() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let app = populated_app();
+        let mut terminal = Terminal::new(TestBackend::new(150, 32)).unwrap();
+        terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        println!("\n{out}");
     }
 }

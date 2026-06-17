@@ -64,21 +64,25 @@ impl RateState {
         Some((remaining as f64 / per_sec).round() as u64)
     }
 
-    /// Per-minute output totals for the last `window_min` minutes ending at
-    /// `now_secs`, oldest first; minutes with no samples are `0`. Feeds the
-    /// burn-rate sparkline. Empty when `window_min == 0`.
-    pub fn per_minute_series(&self, now_secs: i64, window_min: u32) -> Vec<u64> {
-        if window_min == 0 {
+    /// Per-minute output totals over the last `span_min` minutes ending at the
+    /// minute containing `now_secs`, oldest first, with idle minutes filled as
+    /// 0 so the series always has exactly `span_min` entries (a stable width
+    /// for a sparkline). Empty when `span_min == 0`.
+    pub fn minute_series(&self, now_secs: i64, span_min: u32) -> Vec<u64> {
+        if span_min == 0 {
             return Vec::new();
         }
         let now_bucket = now_secs.div_euclid(60);
-        let n = i64::from(window_min);
-        (0..n)
-            .map(|i| {
-                let bucket = now_bucket - (n - 1 - i);
-                self.buckets.get(&bucket).copied().unwrap_or(0)
-            })
+        let start = now_bucket - (span_min as i64) + 1;
+        (start..=now_bucket)
+            .map(|b| self.buckets.get(&b).copied().unwrap_or(0))
             .collect()
+    }
+
+    /// The highest single-minute output total across all buckets in the window
+    /// (0 if there are no samples).
+    pub fn peak_per_minute(&self) -> u64 {
+        self.buckets.values().copied().max().unwrap_or(0)
     }
 }
 
@@ -156,18 +160,35 @@ mod tests {
     }
 
     #[test]
-    fn per_minute_series_is_oldest_first_with_zero_gaps() {
+    fn minute_series_fills_gaps_with_zero_and_is_ordered() {
         let mut r = RateState::new();
-        r.replace_from_samples([(at_min(98), 100), (at_min(100), 300)]);
-        // window 5 ending at min 100 → buckets [96, 97, 98, 99, 100]
-        let s = r.per_minute_series(at_min(100), 5);
-        assert_eq!(s, vec![0, 0, 100, 0, 300]);
+        r.replace_from_samples([(at_min(100), 500), (at_min(98), 300)]);
+        // last 5 minutes ending at min 100 → buckets 96,97,98,99,100
+        assert_eq!(r.minute_series(at_min(100), 5), vec![0, 0, 300, 0, 500]);
     }
 
     #[test]
-    fn per_minute_series_empty_window_is_empty() {
+    fn peak_per_minute_returns_max_bucket() {
+        let mut r = RateState::new();
+        r.replace_from_samples([(at_min(100), 500), (at_min(98), 1_200), (at_min(99), 300)]);
+        assert_eq!(r.peak_per_minute(), 1_200);
+    }
+
+    #[test]
+    fn peak_per_minute_empty_is_zero() {
+        assert_eq!(RateState::new().peak_per_minute(), 0);
+    }
+
+    #[test]
+    fn minute_series_zero_span_is_empty() {
         let r = RateState::new();
-        assert!(r.per_minute_series(at_min(100), 0).is_empty());
+        assert!(r.minute_series(at_min(100), 0).is_empty());
+    }
+
+    #[test]
+    fn minute_series_length_matches_span() {
+        let r = RateState::new();
+        assert_eq!(r.minute_series(at_min(100), 12).len(), 12);
     }
 
     #[test]
