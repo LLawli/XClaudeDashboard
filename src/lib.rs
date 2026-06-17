@@ -9,6 +9,7 @@ mod format;
 mod pricing;
 mod rate;
 mod remote;
+mod style;
 mod tui;
 mod ui;
 mod widgets;

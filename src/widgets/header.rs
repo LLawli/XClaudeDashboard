@@ -2,7 +2,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Widget};
+use ratatui::widgets::{Paragraph, Widget};
 
 use crate::format::{compact, duration_hms, iso_local_dated_hms, iso_local_hms};
 
@@ -25,6 +25,7 @@ pub struct HeaderState {
 
 impl Widget for &HeaderState {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let theme = crate::style::bubble_theme();
         let stamp = if self.show_date {
             iso_local_dated_hms
         } else {
@@ -37,7 +38,7 @@ impl Widget for &HeaderState {
                 stamp(self.resets_at),
                 duration_hms(self.resets_at - self.now),
             ),
-            Style::default().add_modifier(Modifier::BOLD),
+            theme.text.add_modifier(Modifier::BOLD),
         )]);
 
         let remaining = self.output_limit.saturating_sub(self.output_used);
@@ -65,13 +66,23 @@ impl Widget for &HeaderState {
             ),
             None => "—  (idle)".into(),
         };
+        // Badge: ✓ when the budget lasts past the reset, ⚠ when it's on pace to
+        // exhaust before then. Same color as the ETA text (severity-coded).
+        let badge = match self.eta_seconds {
+            None => "",
+            Some(_) if until_reset <= 0 => "",
+            Some(s) if (s as i64) >= until_reset => "✓ ",
+            Some(_) => "⚠ ",
+        };
         let eta = Line::from(vec![
             Span::raw("  ETA 100%   "),
+            Span::styled(badge, Style::default().fg(self.eta_color)),
             Span::styled(eta_text, Style::default().fg(self.eta_color)),
         ]);
 
+        // Blue focused border anchors the session card as the active view.
         let para = Paragraph::new(vec![session, output, remaining_line, eta])
-            .block(Block::bordered().title(self.title));
+            .block(theme.block_with_focus(true).title(self.title));
         para.render(area, buf);
     }
 }
