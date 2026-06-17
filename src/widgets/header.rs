@@ -66,13 +66,23 @@ impl Widget for &HeaderState {
             ),
             None => "—  (idle)".into(),
         };
+        // Badge: ✓ when the budget lasts past the reset, ⚠ when it's on pace to
+        // exhaust before then. Same color as the ETA text (severity-coded).
+        let badge = match self.eta_seconds {
+            None => "",
+            Some(_) if until_reset <= 0 => "",
+            Some(s) if (s as i64) >= until_reset => "✓ ",
+            Some(_) => "⚠ ",
+        };
         let eta = Line::from(vec![
             Span::raw("  ETA 100%   "),
+            Span::styled(badge, Style::default().fg(self.eta_color)),
             Span::styled(eta_text, Style::default().fg(self.eta_color)),
         ]);
 
+        // Blue focused border anchors the session card as the active view.
         let para = Paragraph::new(vec![session, output, remaining_line, eta])
-            .block(theme.titled_block(self.title));
+            .block(theme.block_with_focus(true).title(self.title));
         para.render(area, buf);
     }
 }

@@ -625,6 +625,10 @@ mod tests {
         for (w, h) in [(190, 50), (160, 40), (100, 30), (80, 24), (40, 10)] {
             render_at(&app, w, h);
         }
+        // closed window (muted gauge fill) must also render
+        let mut closed = populated_app();
+        closed.status = Status::Closed;
+        render_at(&closed, 160, 40);
     }
 
     #[test]

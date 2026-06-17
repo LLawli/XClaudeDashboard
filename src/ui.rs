@@ -190,13 +190,15 @@ fn render_usage_card(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
         let r = pct / 100.0;
         if r.is_finite() { r.clamp(0.0, 1.0) } else { 0.0 }
     };
+    // A closed (historical) window shows muted; an active one is severity-coded.
+    let fill = if matches!(app.status, Status::Closed) {
+        theme.palette.muted
+    } else {
+        usage_severity(pct)
+    };
     let gauge = Gauge::default()
         .ratio(ratio)
-        .gauge_style(
-            Style::default()
-                .fg(usage_severity(pct))
-                .bg(theme.palette.selected_background),
-        )
+        .gauge_style(Style::default().fg(fill).bg(theme.palette.selected_background))
         .label(label)
         .use_unicode(true);
     // Center a 2-row gauge in the card so the accent severity color doesn't
