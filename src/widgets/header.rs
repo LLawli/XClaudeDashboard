@@ -2,7 +2,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Widget};
+use ratatui::widgets::{BorderType, Paragraph, Widget};
 
 use crate::format::{compact, duration_hms, iso_local_dated_hms, iso_local_hms};
 
@@ -33,7 +33,7 @@ impl Widget for &HeaderState {
         };
         let session = Line::from(vec![Span::styled(
             format!(
-                " started {} · resets {} · {} left ",
+                " started {} • resets {} • {} left ",
                 stamp(self.started),
                 stamp(self.resets_at),
                 duration_hms(self.resets_at - self.now),
@@ -80,9 +80,13 @@ impl Widget for &HeaderState {
             Span::styled(eta_text, Style::default().fg(self.eta_color)),
         ]);
 
-        // Blue focused border anchors the session card as the active view.
-        let para = Paragraph::new(vec![session, output, remaining_line, eta])
-            .block(theme.block_with_focus(true).title(self.title));
+        // Blue, thick-bordered session card anchors it as the hero / active view.
+        let para = Paragraph::new(vec![session, output, remaining_line, eta]).block(
+            theme
+                .block_with_focus(true)
+                .border_type(BorderType::Thick)
+                .title(self.title),
+        );
         para.render(area, buf);
     }
 }
