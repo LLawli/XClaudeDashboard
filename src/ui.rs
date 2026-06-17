@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Bar, BarChart, Gauge, Padding, Paragraph, Sparkline};
+use ratatui::widgets::{Bar, BarChart, Gauge, Padding, Paragraph, Sparkline, SparklineBar};
 use ratatui_bubbletea_components::{Help, KeyBinding, Spinner, SpinnerFrames};
 
 use crate::app::{App, FooterStatus, IDLE_THRESHOLD_PER_MIN, RATE_WINDOW_MIN, Status};
@@ -178,10 +178,12 @@ fn render_usage_card(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
     let used = app.aggregate.total_output;
     let limit = output_limit(used, window.used_percentage);
     let pct = window.used_percentage;
+    // The bar length already encodes the ratio and the header repeats the
+    // absolute figures, so the gauge label stays terse: just the percent.
     let label = if limit == 0 {
         "—".to_string()
     } else {
-        format!("{} / {} · {:.0}%", compact(used), compact(limit), pct)
+        format!("{pct:.0}%")
     };
     // `ratio` panics outside 0..=1. `used_percentage` comes from an external,
     // unvalidated SQLite column: it can exceed 100 (clamps fine) OR be NaN
@@ -226,13 +228,22 @@ fn render_burn_card(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         let peak = app.rate.peak_per_minute();
         let elapsed_min = ((app.now_secs - w.start_at) / 60).max(1) as f64;
         let avg = app.aggregate.total_output as f64 / elapsed_min;
-        block.title(
+        let now_val = now.round() as u64;
+        // A non-empty series whose current 15-min rate rounds to 0 reads as
+        // idle (distinct from the whole-series "no burn yet" empty state).
+        let now_span = if now_val == 0 {
+            theme.muted("idle")
+        } else {
+            theme.span(compact(now_val))
+        };
+        // Bottom-aligned so it reads as a caption under the chart.
+        block.title_bottom(
             Line::from(vec![
                 theme.muted("now "),
-                theme.span(compact(now.round() as u64)),
-                theme.muted(" · avg "),
+                now_span,
+                theme.muted(" • avg "),
                 theme.span(compact(avg.round() as u64)),
-                theme.muted(" · peak "),
+                theme.muted(" • peak "),
                 theme.span(compact(peak)),
                 theme.muted("/min "),
             ])
@@ -253,11 +264,31 @@ fn render_burn_card(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         return;
     }
     let peak = series.iter().copied().max().unwrap_or(1).max(1);
-    let sparkline = Sparkline::default()
-        .data(series)
-        .max(peak)
-        .style(Style::default().fg(theme.palette.muted));
+    let peak_col = series.iter().position(|&v| v == peak);
+    // Heat-grade each column by its share of the peak (muted → foreground →
+    // amber) so spikes read as "hot" pre-attentively. Height already encodes
+    // magnitude, so the color is redundant reinforcement that degrades
+    // gracefully on low-color terminals.
+    let bars: Vec<SparklineBar> = series
+        .iter()
+        .map(|&v| {
+            SparklineBar::from(v).style(Style::default().fg(heat_color(v as f64 / peak as f64)))
+        })
+        .collect();
+    let sparkline = Sparkline::default().data(bars).max(peak);
     frame.render_widget(sparkline, inner);
+    // Mark the peak column's top cell — anchors the "peak …/min" caption and
+    // carries the "hot" signal independently of color (a11y / low-color safe).
+    if let Some(i) = peak_col {
+        if (i as u16) < inner.width {
+            frame.buffer_mut().set_string(
+                inner.x + i as u16,
+                inner.y,
+                "◆",
+                Style::default().fg(theme.palette.warning),
+            );
+        }
+    }
 }
 
 fn view_title(view: WindowKind) -> &'static str {
@@ -329,7 +360,8 @@ fn render_breakdown_card(frame: &mut Frame, app: &App, area: ratatui::layout::Re
 /// far more numerous yet ~10× cheaper, so a count-based view is misleading.
 /// Each token count is multiplied by its per-model, per-type price and summed
 /// over the current view (models, or per-device→per-model in verbose).
-/// `output` is drawn in the accent color because it's the metered resource.
+/// The LARGEST cost bar gets the accent (the brightest color lands on the most
+/// important value); `output` carries a thin `·` marker as the metered resource.
 fn render_cost_card(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let theme = crate::style::bubble_theme();
     let block = theme.titled_block(" cost ").padding(Padding::horizontal(1));
@@ -369,23 +401,36 @@ fn render_cost_card(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     // Bar values in cents (u64) to keep cent precision when scaling the bars.
     let cents = |d: f64| (d * 100.0).round().max(0.0) as u64;
+    let vals = [input, output, cache, read];
+    let labels = ["input", "output", "cache", "read"];
     let maxv = cents(input.max(output).max(cache).max(read)).max(1);
-    let bar = |label: &'static str, d: f64, accent: bool| {
-        Bar::with_label(label, cents(d))
-            .text_value(format!("${d:.2}"))
-            .style(if accent { theme.accent } else { theme.muted })
-    };
-    let chart = BarChart::horizontal(vec![
-        bar("input", input, false),
-        bar("output", output, true),
-        bar("cache", cache, false),
-        bar("read", read, false),
-    ])
-    .max(maxv)
-    .bar_width(1)
-    .bar_gap(1)
-    .label_style(theme.muted)
-    .value_style(theme.text);
+    // First-max-wins, so exactly one bar is ever the loudest (accent budget = 1).
+    let mut max_i = 0;
+    for i in 1..vals.len() {
+        if vals[i] > vals[max_i] {
+            max_i = i;
+        }
+    }
+    let bars: Vec<Bar> = (0..vals.len())
+        .map(|i| {
+            let d = vals[i];
+            // output (index 1) keeps a thin `·` marker as the metered resource.
+            let text = if i == 1 {
+                format!("${d:.2} ·")
+            } else {
+                format!("${d:.2}")
+            };
+            Bar::with_label(labels[i], cents(d))
+                .text_value(text)
+                .style(if i == max_i { theme.accent } else { theme.muted })
+        })
+        .collect();
+    let chart = BarChart::horizontal(bars)
+        .max(maxv)
+        .bar_width(1)
+        .bar_gap(1)
+        .label_style(theme.muted)
+        .value_style(theme.text);
     frame.render_widget(chart, inner);
 }
 
@@ -517,7 +562,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         let frames = SpinnerFrames::DOTS;
         let mut spinner = Spinner::new()
             .frames(frames)
-            .label(format!("{view_tag} · {status_text}"))
+            .label(format!("{view_tag} • {status_text}"))
             .theme(theme);
         let len = frames.frames().len().max(1);
         for _ in 0..(app.spinner.frame_index() % len) {
@@ -527,7 +572,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     } else {
         let line = Line::from(vec![
             Span::styled(view_tag, theme.accent),
-            Span::styled(" · ", theme.muted),
+            Span::styled(" • ", theme.muted),
             Span::styled(status_text, status_style),
         ]);
         frame.render_widget(Paragraph::new(line), cols[0]);
@@ -581,6 +626,21 @@ fn output_limit(used: u64, used_pct: f64) -> u64 {
         return 0;
     }
     ((used as f64) / (used_pct / 100.0)).round() as u64
+}
+
+/// 3-stop heat ramp for the burn sparkline: muted (idle) → foreground (normal)
+/// → amber (spike), by a column's share of the window peak. Color is redundant
+/// with bar height, so the chart stays legible on low-color terminals.
+fn heat_color(ratio: f64) -> Color {
+    let stops = [(122u8, 122, 122), (230, 230, 230), (255, 193, 7)];
+    let r = ratio.clamp(0.0, 1.0);
+    let (lo, hi, t) = if r < 0.5 {
+        (stops[0], stops[1], r / 0.5)
+    } else {
+        (stops[1], stops[2], (r - 0.5) / 0.5)
+    };
+    let mix = |a: u8, b: u8| (a as f64 + (b as f64 - a as f64) * t).round() as u8;
+    Color::Rgb(mix(lo.0, hi.0), mix(lo.1, hi.1), mix(lo.2, hi.2))
 }
 
 /// Severity color for the usage gauge by fill level: green under 70%, amber
@@ -716,6 +776,16 @@ mod tests {
     fn footer_chip_range_clamps_when_too_narrow() {
         // Frame narrower than the chip → start saturates to 0, never underflows.
         assert_eq!(footer_verbose_chip_range(false, 5), (0, 5));
+    }
+
+    #[test]
+    fn heat_color_ramps_muted_through_fg_to_amber() {
+        assert_eq!(heat_color(0.0), Color::Rgb(122, 122, 122)); // idle
+        assert_eq!(heat_color(0.5), Color::Rgb(230, 230, 230)); // normal (mid stop)
+        assert_eq!(heat_color(1.0), Color::Rgb(255, 193, 7)); // spike
+        // out-of-range clamps to the endpoints, never panics
+        assert_eq!(heat_color(-1.0), Color::Rgb(122, 122, 122));
+        assert_eq!(heat_color(2.0), Color::Rgb(255, 193, 7));
     }
 
     #[test]

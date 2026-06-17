@@ -2,17 +2,22 @@ use std::collections::BTreeMap;
 
 use ratatui::style::Color;
 
+// A cohesive categorical palette (one locked-ish lightness/chroma, rotating
+// hue) for per-model / per-device series. It deliberately LEADS with hues that
+// are not in the Charm chrome's semantic slots (teal, not the chrome blue;
+// orange; violet) so "data identity" and "chrome status" read as two different
+// visual languages.
 const PALETTE: [Color; 10] = [
-    Color::Cyan,
-    Color::Magenta,
-    Color::Yellow,
-    Color::Green,
-    Color::Blue,
-    Color::Red,
-    Color::LightCyan,
-    Color::LightMagenta,
-    Color::LightYellow,
-    Color::LightGreen,
+    Color::Rgb(45, 212, 191),  // teal
+    Color::Rgb(251, 146, 60),  // orange
+    Color::Rgb(167, 139, 250), // violet
+    Color::Rgb(163, 230, 53),  // lime
+    Color::Rgb(232, 121, 249), // fuchsia
+    Color::Rgb(56, 189, 248),  // sky
+    Color::Rgb(250, 204, 21),  // yellow
+    Color::Rgb(129, 140, 248), // indigo
+    Color::Rgb(52, 211, 153),  // emerald
+    Color::Rgb(244, 114, 182), // pink
 ];
 
 const FALLBACK: Color = Color::DarkGray;
@@ -75,9 +80,9 @@ mod tests {
     #[test]
     fn first_three_models_get_first_three_colors() {
         let mut cm = ColorMap::new();
-        assert_eq!(cm.assign("opus"), Color::Cyan);
-        assert_eq!(cm.assign("sonnet"), Color::Magenta);
-        assert_eq!(cm.assign("haiku"), Color::Yellow);
+        assert_eq!(cm.assign("opus"), Color::Rgb(45, 212, 191));
+        assert_eq!(cm.assign("sonnet"), Color::Rgb(251, 146, 60));
+        assert_eq!(cm.assign("haiku"), Color::Rgb(167, 139, 250));
     }
 
     #[test]
@@ -96,7 +101,7 @@ mod tests {
         cm.assign("b");
         cm.reset();
         assert!(cm.is_empty());
-        assert_eq!(cm.assign("a"), Color::Cyan);
+        assert_eq!(cm.assign("a"), Color::Rgb(45, 212, 191));
     }
 
     #[test]
