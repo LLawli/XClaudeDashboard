@@ -64,19 +64,29 @@ impl RateState {
         Some((remaining as f64 / per_sec).round() as u64)
     }
 
-    /// Per-minute output totals over the last `span_min` minutes ending at the
-    /// minute containing `now_secs`, oldest first, with idle minutes filled as
-    /// 0 so the series always has exactly `span_min` entries (a stable width
-    /// for a sparkline). Empty when `span_min == 0`.
-    pub fn minute_series(&self, now_secs: i64, span_min: u32) -> Vec<u64> {
-        if span_min == 0 {
+    /// Output totals binned into `cols` equal-width time slices spanning the
+    /// whole `[start_secs, end_secs)` window, oldest first. Each bin sums all
+    /// output that falls in its sub-range, so the series always represents the
+    /// *entire* elapsed window (not just the last few minutes) regardless of how
+    /// long the window is — for a 7-day window each bin groups roughly an hour.
+    /// Returns an empty vec when `cols == 0` or the range is non-positive.
+    pub fn binned_series(&self, start_secs: i64, end_secs: i64, cols: u32) -> Vec<u64> {
+        if cols == 0 || end_secs <= start_secs {
             return Vec::new();
         }
-        let now_bucket = now_secs.div_euclid(60);
-        let start = now_bucket - (span_min as i64) + 1;
-        (start..=now_bucket)
-            .map(|b| self.buckets.get(&b).copied().unwrap_or(0))
-            .collect()
+        let span = (end_secs - start_secs) as f64;
+        let n = cols as usize;
+        let mut bins = vec![0u64; n];
+        for (&bucket, &qty) in &self.buckets {
+            let ts = bucket * 60; // minute bucket → its start second
+            if ts < start_secs || ts >= end_secs {
+                continue;
+            }
+            let frac = (ts - start_secs) as f64 / span;
+            let idx = ((frac * cols as f64) as usize).min(n - 1);
+            bins[idx] += qty;
+        }
+        bins
     }
 
     /// The highest single-minute output total across all buckets in the window
@@ -160,11 +170,45 @@ mod tests {
     }
 
     #[test]
-    fn minute_series_fills_gaps_with_zero_and_is_ordered() {
+    fn binned_series_distributes_across_whole_window_ordered() {
         let mut r = RateState::new();
         r.replace_from_samples([(at_min(100), 500), (at_min(98), 300)]);
-        // last 5 minutes ending at min 100 → buckets 96,97,98,99,100
-        assert_eq!(r.minute_series(at_min(100), 5), vec![0, 0, 300, 0, 500]);
+        // window [min 96, min 101) = 300s, 5 bins of 60s each → one bin per minute
+        // 96,97,98,99,100 → bin0=0, bin1=0, bin2=300, bin3=0, bin4=500
+        assert_eq!(
+            r.binned_series(at_min(96), at_min(101), 5),
+            vec![0, 0, 300, 0, 500]
+        );
+    }
+
+    #[test]
+    fn binned_series_groups_multiple_minutes_per_bin() {
+        let mut r = RateState::new();
+        // 4 minutes of data, binned into 2 columns → 2 minutes per bin
+        r.replace_from_samples([
+            (at_min(0), 100),
+            (at_min(1), 200),
+            (at_min(2), 40),
+            (at_min(3), 60),
+        ]);
+        // window [min 0, min 4) = 240s, 2 bins of 120s: bin0=min0+1, bin1=min2+3
+        assert_eq!(r.binned_series(at_min(0), at_min(4), 2), vec![300, 100]);
+    }
+
+    #[test]
+    fn binned_series_excludes_samples_outside_range() {
+        let mut r = RateState::new();
+        r.replace_from_samples([(at_min(50), 1000), (at_min(100), 500), (at_min(200), 999)]);
+        // only the min-100 bucket falls inside [min 96, min 101)
+        assert_eq!(r.binned_series(at_min(96), at_min(101), 5), vec![0, 0, 0, 0, 500]);
+    }
+
+    #[test]
+    fn binned_series_empty_range_is_empty() {
+        let mut r = RateState::new();
+        r.replace_from_samples([(at_min(100), 500)]);
+        assert!(r.binned_series(at_min(100), at_min(100), 5).is_empty());
+        assert!(r.binned_series(at_min(101), at_min(100), 5).is_empty());
     }
 
     #[test]
@@ -180,15 +224,15 @@ mod tests {
     }
 
     #[test]
-    fn minute_series_zero_span_is_empty() {
+    fn binned_series_zero_cols_is_empty() {
         let r = RateState::new();
-        assert!(r.minute_series(at_min(100), 0).is_empty());
+        assert!(r.binned_series(at_min(0), at_min(100), 0).is_empty());
     }
 
     #[test]
-    fn minute_series_length_matches_span() {
+    fn binned_series_length_matches_cols() {
         let r = RateState::new();
-        assert_eq!(r.minute_series(at_min(100), 12).len(), 12);
+        assert_eq!(r.binned_series(at_min(0), at_min(100), 12).len(), 12);
     }
 
     #[test]

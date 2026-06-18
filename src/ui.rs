@@ -271,8 +271,17 @@ fn render_burn_card(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    // One bar per inner column; idle minutes are 0 so the width stays stable.
-    let series = app.rate.minute_series(app.now_secs, inner.width as u32);
+    // One bar per inner column, spanning the whole elapsed window so the chart
+    // reflects the entire session (e.g. the full week for the 7d view) rather
+    // than just the last few minutes. Each bar groups however many minutes fit
+    // in its time slice. End at `now` (clamped to the window's reset so a closed
+    // window shows the completed span, not empty future bins).
+    let series = if let Some(w) = app.window {
+        let end = app.now_secs.min(w.resets_at);
+        app.rate.binned_series(w.start_at, end, inner.width as u32)
+    } else {
+        Vec::new()
+    };
     if series.iter().all(|&v| v == 0) {
         frame.render_widget(Paragraph::new(theme.muted("no burn yet")), inner);
         return;
