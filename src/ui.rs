@@ -120,13 +120,31 @@ fn render_tabs(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     frame.render_widget(tab_7d, halves[1]);
 }
 
+/// Renders a standard padded, rounded card titled `title` into `area` and
+/// returns the inner content rect — the shared chrome for the dashboard panels.
+fn card(frame: &mut Frame, area: ratatui::layout::Rect, title: &str) -> ratatui::layout::Rect {
+    let block = crate::style::bubble_theme()
+        .titled_block(title)
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    inner
+}
+
+/// Share of `total` as a 0–100 percentage, guarding the empty window.
+fn pct_of(part: u64, total: u64) -> f64 {
+    if total == 0 {
+        0.0
+    } else {
+        part as f64 / total as f64 * 100.0
+    }
+}
+
 fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let title = view_title(app.view);
     let Some(window) = app.window else {
-        let theme = crate::style::bubble_theme();
-        let para = theme
-            .paragraph("waiting for first hook from XClaudeUsage…")
-            .block(theme.titled_block(title));
+        let para = crate::style::bubble_theme()
+            .paragraph_in_block("waiting for first hook from XClaudeUsage…", title);
         frame.render_widget(para, area);
         return;
     };
@@ -142,7 +160,7 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         IDLE_THRESHOLD_PER_MIN,
     );
     let until_reset = window.resets_at - app.now_secs;
-    let eta_color = eta_color(eta_seconds, until_reset);
+    let eta_color = crate::style::eta_color(eta_seconds, until_reset);
 
     let state = HeaderState {
         title,
@@ -165,11 +183,7 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 /// Fill level = window usage %; fill color = severity band (green/amber/red).
 fn render_usage_card(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let theme = crate::style::bubble_theme();
-    let block = theme
-        .titled_block(" window usage ")
-        .padding(Padding::horizontal(1));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = card(frame, area, " window usage ");
 
     let Some(window) = app.window else {
         frame.render_widget(Paragraph::new(theme.muted("—")), inner);
@@ -196,7 +210,7 @@ fn render_usage_card(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
     let fill = if matches!(app.status, Status::Closed) {
         theme.palette.muted
     } else {
-        usage_severity(pct)
+        crate::style::usage_severity(pct)
     };
     let gauge = Gauge::default()
         .ratio(ratio)
@@ -272,7 +286,8 @@ fn render_burn_card(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let bars: Vec<SparklineBar> = series
         .iter()
         .map(|&v| {
-            SparklineBar::from(v).style(Style::default().fg(heat_color(v as f64 / peak as f64)))
+            SparklineBar::from(v)
+                .style(Style::default().fg(crate::style::heat_color(v as f64 / peak as f64)))
         })
         .collect();
     let sparkline = Sparkline::default().data(bars).max(peak);
@@ -339,11 +354,8 @@ fn render_stacked_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
 /// block's padded inner rect; the `StackedBar` and legend `Table` themselves
 /// are untouched (their per-series colors and geometry stay test-stable).
 fn render_breakdown_card(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let theme = crate::style::bubble_theme();
     let title = if app.verbose { " devices " } else { " models " };
-    let block = theme.titled_block(title).padding(Padding::horizontal(1));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = card(frame, area, title);
 
     let rows = Layout::vertical([
         Constraint::Length(1), // stacked bar
@@ -364,9 +376,7 @@ fn render_breakdown_card(frame: &mut Frame, app: &App, area: ratatui::layout::Re
 /// important value); `output` carries a thin `·` marker as the metered resource.
 fn render_cost_card(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let theme = crate::style::bubble_theme();
-    let block = theme.titled_block(" cost ").padding(Padding::horizontal(1));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = card(frame, area, " cost ");
     if inner.width == 0 || inner.height == 0 {
         return;
     }
@@ -401,26 +411,31 @@ fn render_cost_card(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     // Bar values in cents (u64) to keep cent precision when scaling the bars.
     let cents = |d: f64| (d * 100.0).round().max(0.0) as u64;
-    let vals = [input, output, cache, read];
-    let labels = ["input", "output", "cache", "read"];
+    let kinds = [
+        ("input", input),
+        ("output", output),
+        ("cache", cache),
+        ("read", read),
+    ];
     let maxv = cents(input.max(output).max(cache).max(read)).max(1);
     // First-max-wins, so exactly one bar is ever the loudest (accent budget = 1).
     let mut max_i = 0;
-    for i in 1..vals.len() {
-        if vals[i] > vals[max_i] {
+    for i in 1..kinds.len() {
+        if kinds[i].1 > kinds[max_i].1 {
             max_i = i;
         }
     }
-    let bars: Vec<Bar> = (0..vals.len())
-        .map(|i| {
-            let d = vals[i];
-            // output (index 1) keeps a thin `·` marker as the metered resource.
-            let text = if i == 1 {
+    let bars: Vec<Bar> = kinds
+        .iter()
+        .enumerate()
+        .map(|(i, &(label, d))| {
+            // output keeps a thin `·` marker as the metered resource.
+            let text = if label == "output" {
                 format!("${d:.2} ·")
             } else {
                 format!("${d:.2}")
             };
-            Bar::with_label(labels[i], cents(d))
+            Bar::with_label(label, cents(d))
                 .text_value(text)
                 .style(if i == max_i { theme.accent } else { theme.muted })
         })
@@ -450,11 +465,7 @@ fn render_model_legend(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
         .iter()
         .map(|(model, totals)| {
             let color = app.colors.get(model).unwrap_or(Color::DarkGray);
-            let pct = if total == 0 {
-                0.0
-            } else {
-                totals.total() as f64 / total as f64 * 100.0
-            };
+            let pct = pct_of(totals.total(), total);
             let cost = app.pricing.lookup(model).map(|p| {
                 cost_for(
                     p,
@@ -489,11 +500,7 @@ fn render_device_legend(frame: &mut Frame, app: &App, area: ratatui::layout::Rec
         .map(|device| {
             let totals = app.device_aggregate.totals(device);
             let color = app.device_colors.get(device).unwrap_or(Color::DarkGray);
-            let pct = if total == 0 {
-                0.0
-            } else {
-                totals.total() as f64 / total as f64 * 100.0
-            };
+            let pct = pct_of(totals.total(), total);
             let cost = app.device_aggregate.cost(device, &app.pricing);
             DeviceRow {
                 device,
@@ -628,45 +635,6 @@ fn output_limit(used: u64, used_pct: f64) -> u64 {
     ((used as f64) / (used_pct / 100.0)).round() as u64
 }
 
-/// 3-stop heat ramp for the burn sparkline: muted (idle) → foreground (normal)
-/// → amber (spike), by a column's share of the window peak. Color is redundant
-/// with bar height, so the chart stays legible on low-color terminals.
-fn heat_color(ratio: f64) -> Color {
-    let stops = [(122u8, 122, 122), (230, 230, 230), (255, 193, 7)];
-    let r = ratio.clamp(0.0, 1.0);
-    let (lo, hi, t) = if r < 0.5 {
-        (stops[0], stops[1], r / 0.5)
-    } else {
-        (stops[1], stops[2], (r - 0.5) / 0.5)
-    };
-    let mix = |a: u8, b: u8| (a as f64 + (b as f64 - a as f64) * t).round() as u8;
-    Color::Rgb(mix(lo.0, hi.0), mix(lo.1, hi.1), mix(lo.2, hi.2))
-}
-
-/// Severity color for the usage gauge by fill level: green under 70%, amber
-/// 70–90%, red at/over 90%. Pure so it can be unit-tested.
-fn usage_severity(used_pct: f64) -> Color {
-    let p = crate::style::bubble_theme().palette;
-    if used_pct >= 90.0 {
-        p.error
-    } else if used_pct >= 70.0 {
-        p.warning
-    } else {
-        p.success
-    }
-}
-
-fn eta_color(eta_seconds: Option<u64>, until_reset: i64) -> Color {
-    let p = crate::style::bubble_theme().palette;
-    match eta_seconds {
-        None => p.muted,
-        Some(_) if until_reset <= 0 => p.muted,
-        Some(s) if (s as i64) >= until_reset => p.success,
-        Some(s) if (s as i64) >= until_reset / 2 => p.warning,
-        Some(_) => p.error,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -686,47 +654,6 @@ mod tests {
     #[test]
     fn output_limit_full_used() {
         assert_eq!(output_limit(700, 100.0), 700);
-    }
-
-    #[test]
-    fn eta_color_idle_is_muted() {
-        assert_eq!(
-            eta_color(None, 1_000),
-            crate::style::bubble_theme().palette.muted
-        );
-    }
-
-    #[test]
-    fn eta_color_wont_overflow_is_success() {
-        let success = crate::style::bubble_theme().palette.success;
-        assert_eq!(eta_color(Some(2_000), 1_000), success);
-        assert_eq!(eta_color(Some(1_000), 1_000), success);
-    }
-
-    #[test]
-    fn eta_color_tight_is_warning() {
-        // 600 < 1000 but >= 500 → warning band
-        assert_eq!(
-            eta_color(Some(600), 1_000),
-            crate::style::bubble_theme().palette.warning
-        );
-    }
-
-    #[test]
-    fn eta_color_burning_fast_is_error() {
-        // 100 < 500 → error band
-        assert_eq!(
-            eta_color(Some(100), 1_000),
-            crate::style::bubble_theme().palette.error
-        );
-    }
-
-    #[test]
-    fn eta_color_after_reset_is_muted() {
-        assert_eq!(
-            eta_color(Some(60), -10),
-            crate::style::bubble_theme().palette.muted
-        );
     }
 
     #[test]
@@ -776,26 +703,5 @@ mod tests {
     fn footer_chip_range_clamps_when_too_narrow() {
         // Frame narrower than the chip → start saturates to 0, never underflows.
         assert_eq!(footer_verbose_chip_range(false, 5), (0, 5));
-    }
-
-    #[test]
-    fn heat_color_ramps_muted_through_fg_to_amber() {
-        assert_eq!(heat_color(0.0), Color::Rgb(122, 122, 122)); // idle
-        assert_eq!(heat_color(0.5), Color::Rgb(230, 230, 230)); // normal (mid stop)
-        assert_eq!(heat_color(1.0), Color::Rgb(255, 193, 7)); // spike
-        // out-of-range clamps to the endpoints, never panics
-        assert_eq!(heat_color(-1.0), Color::Rgb(122, 122, 122));
-        assert_eq!(heat_color(2.0), Color::Rgb(255, 193, 7));
-    }
-
-    #[test]
-    fn usage_severity_bands() {
-        let p = crate::style::bubble_theme().palette;
-        assert_eq!(usage_severity(0.0), p.success);
-        assert_eq!(usage_severity(69.9), p.success);
-        assert_eq!(usage_severity(70.0), p.warning);
-        assert_eq!(usage_severity(89.9), p.warning);
-        assert_eq!(usage_severity(90.0), p.error);
-        assert_eq!(usage_severity(150.0), p.error);
     }
 }
