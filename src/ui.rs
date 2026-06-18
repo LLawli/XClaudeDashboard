@@ -204,7 +204,11 @@ fn render_usage_card(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
     // (clamp passes NaN through → assert panic), so guard for finiteness.
     let ratio = {
         let r = pct / 100.0;
-        if r.is_finite() { r.clamp(0.0, 1.0) } else { 0.0 }
+        if r.is_finite() {
+            r.clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
     };
     // A closed (historical) window shows muted; an active one is severity-coded.
     let fill = if matches!(app.status, Status::Closed) {
@@ -214,7 +218,11 @@ fn render_usage_card(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
     };
     let gauge = Gauge::default()
         .ratio(ratio)
-        .gauge_style(Style::default().fg(fill).bg(theme.palette.selected_background))
+        .gauge_style(
+            Style::default()
+                .fg(fill)
+                .bg(theme.palette.selected_background),
+        )
         .label(label)
         .use_unicode(true);
     // Center a 2-row gauge in the card so the accent severity color doesn't
@@ -446,7 +454,11 @@ fn render_cost_card(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             };
             Bar::with_label(label, cents(d))
                 .text_value(text)
-                .style(if i == max_i { theme.accent } else { theme.muted })
+                .style(if i == max_i {
+                    theme.accent
+                } else {
+                    theme.muted
+                })
         })
         .collect();
     let chart = BarChart::horizontal(bars)
@@ -545,7 +557,11 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         width: chip_end - chip_start,
         height: area.height,
     };
-    let chip_style = if app.verbose { theme.selected } else { theme.muted };
+    let chip_style = if app.verbose {
+        theme.selected
+    } else {
+        theme.muted
+    };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             verbose_chip_text(app.verbose),

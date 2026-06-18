@@ -200,7 +200,10 @@ mod tests {
         let mut r = RateState::new();
         r.replace_from_samples([(at_min(50), 1000), (at_min(100), 500), (at_min(200), 999)]);
         // only the min-100 bucket falls inside [min 96, min 101)
-        assert_eq!(r.binned_series(at_min(96), at_min(101), 5), vec![0, 0, 0, 0, 500]);
+        assert_eq!(
+            r.binned_series(at_min(96), at_min(101), 5),
+            vec![0, 0, 0, 0, 500]
+        );
     }
 
     #[test]
