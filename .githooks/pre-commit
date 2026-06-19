@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Pre-commit hook: block commits that don't match the project's rustfmt style.
+# Mirrors the CI `fmt` check (cargo fmt --all -- --check under stable rustfmt,
+# pinned by rust-toolchain.toml) so formatting drift never reaches CI again.
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+set -euo pipefail
+
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "pre-commit: cargo not found, skipping fmt check" >&2
+    exit 0
+fi
+
+if ! cargo fmt --all -- --check; then
+    echo >&2
+    echo "pre-commit: formatting check failed. Run 'cargo fmt --all' and re-stage." >&2
+    exit 1
+fi
