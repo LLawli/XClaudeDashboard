@@ -1,11 +1,17 @@
-# Release pipeline. A `v*.*.*` tag compiles the binary once per target, packages
-# it many ways (tarball/zip + .deb/.rpm) — "compile once, repackage many" — and
-# publishes a GitHub Release with checksums and the CHANGELOG section, then
-# updates the Homebrew tap formula.
+# Release pipeline. A `v*.*.*` tag compiles the binary once per target,
+# packages it many ways (tarball/zip + .deb/.rpm), "compile once, repackage
+# many", and publishes a GitHub Release with checksums and the CHANGELOG
+# section, then updates the Homebrew tap formula. The .deb/.rpm packages are
+# built BEFORE the release is created so it goes public with every asset and
+# checksum already attached (no window where install.sh sees the new tag but
+# 404s on a package).
 #
 # Cut a release with:  git tag v0.1.0 && git push origin v0.1.0
+# Pre-release tags (any tag containing a hyphen, e.g. v0.2.0-rc.1) publish as
+# GitHub prereleases (never "latest") and skip the Homebrew tap.
 # A manual run (workflow_dispatch) builds the matrix only (no release), to test
-# the cross-compiles without side effects.
+# the cross-compiles without side effects; publishing is gated on the push
+# event so a dispatch pointed at a tag can never clobber released assets.
 
 name: release
 
@@ -14,8 +20,11 @@ on:
     tags: ["v*.*.*"]
   workflow_dispatch:
 
+# Least privilege: only the job that publishes the release gets a
+# write-capable token. The build job runs third-party code (cross images,
+# dependency build scripts and proc-macros) and must not hold one.
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -65,7 +74,10 @@ jobs:
         if: matrix.os != 'windows-latest'
         shell: bash
         run: |
-          dist="xclaude-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          # Sanitize the ref: workflow_dispatch runs from slash-named branches
+          # (fix/..., feat/...), and a `/` in $dist breaks mkdir and tar.
+          ref="${GITHUB_REF_NAME//\//-}"
+          dist="xclaude-${ref}-${{ matrix.target }}"
           mkdir "$dist"
           cp "target/${{ matrix.target }}/release/xclaude" "$dist"/
           cp README.md CHANGELOG.md LICENSE "$dist"/
@@ -75,7 +87,8 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: bash
         run: |
-          dist="xclaude-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          ref="${GITHUB_REF_NAME//\//-}"
+          dist="xclaude-${ref}-${{ matrix.target }}"
           mkdir "$dist"
           cp "target/${{ matrix.target }}/release/xclaude.exe" "$dist"/
           cp README.md CHANGELOG.md LICENSE "$dist"/
@@ -88,44 +101,11 @@ jobs:
             xclaude-*.tar.gz*
             xclaude-*.zip*
 
-  release:
-    name: publish GitHub Release
-    needs: [build]
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { path: artifacts }
-      - name: Assemble release notes + flatten artifacts
-        run: |
-          ver="${GITHUB_REF_NAME#v}"
-          mkdir -p release
-          find artifacts -type f -name 'xclaude-*' -exec cp {} release/ \;
-          # Extract this version's CHANGELOG section (Keep a Changelog).
-          awk -v hdr="## [$ver]" '
-            index($0, hdr) == 1 { flag = 1; next }
-            flag && index($0, "## [") == 1 { exit }
-            flag { print }
-          ' CHANGELOG.md > notes.md
-          [ -s notes.md ] || echo "See [CHANGELOG.md](CHANGELOG.md)." > notes.md
-          {
-            echo
-            echo "### Checksums"
-            echo '```'
-            cat release/*.sha256 2>/dev/null || true
-            echo '```'
-          } >> notes.md
-      - uses: softprops/action-gh-release@v2
-        with:
-          body_path: notes.md
-          files: release/*
-
   # .deb + .rpm for both Linux arches, from the same prebuilt binaries.
   packages:
     name: nfpm (deb + rpm)
-    needs: [build, release]
-    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -135,69 +115,136 @@ jobs:
           path: dist
       - name: Install nfpm
         run: |
-          url=$(curl -sSfL https://api.github.com/repos/goreleaser/nfpm/releases/latest \
-            | grep -o 'https://[^"]*_amd64\.deb' | head -1)
-          curl -sSfL "$url" -o nfpm.deb
+          # Pinned version from the static download URL: no unauthenticated
+          # API call (rate-limit flake on shared runner IPs) and no unreviewed
+          # "latest" changing package naming or behavior between releases
+          # (install.sh hardcodes nfpm's conventional .rpm filename).
+          NFPM_V=2.47.0
+          curl -fsSL -o nfpm.deb \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_V}/nfpm_${NFPM_V}_amd64.deb"
           sudo dpkg -i nfpm.deb
-      - name: Build packages and attach to the release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Build packages
         run: |
-          sudo apt-get update && sudo apt-get install -y gettext-base
+          # envsubst ships preinstalled on ubuntu-24.04 runners; the guard is
+          # only for future image changes.
+          command -v envsubst >/dev/null || { sudo apt-get update && sudo apt-get install -y gettext-base; }
           export NFPM_VERSION="${GITHUB_REF_NAME#v}"
           mkdir -p out
           build() { # rust-arch nfpm-arch
             local t="$1-unknown-linux-musl"
             tar -xzf "dist/${t}/xclaude-${GITHUB_REF_NAME}-${t}.tar.gz"
             export NFPM_ARCH="$2" NFPM_BIN="xclaude-${GITHUB_REF_NAME}-${t}/xclaude"
-            # nfpm doesn't env-expand `contents.src`, so render the config first.
-            envsubst < packaging/nfpm.yaml.tmpl > nfpm.yaml
+            # nfpm doesn't env-expand `contents.src`, so render the config
+            # first. The explicit variable list keeps envsubst from blanking
+            # any other ${...} a future template edit might introduce.
+            envsubst '${NFPM_ARCH} ${NFPM_VERSION} ${NFPM_BIN}' \
+              < packaging/nfpm.yaml.tmpl > nfpm.yaml
             nfpm package -f nfpm.yaml -p deb -t out/
             nfpm package -f nfpm.yaml -p rpm -t out/
           }
           build x86_64 amd64
           build aarch64 arm64
+          # The tarballs get checksums at build time; give the packages theirs
+          # too so every published asset is verifiable.
+          (cd out && for f in *.deb *.rpm; do sha256sum "$f" > "$f.sha256"; done)
           ls -l out/
-          gh release upload "$GITHUB_REF_NAME" out/*.deb out/*.rpm --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: out/*
+
+  release:
+    name: publish GitHub Release
+    needs: [build, packages]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - name: Assemble release notes
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          # Extract this version's CHANGELOG section (Keep a Changelog).
+          awk -v hdr="## [$ver]" '
+            index($0, hdr) == 1 { flag = 1; next }
+            flag && index($0, "## [") == 1 { exit }
+            flag { print }
+          ' CHANGELOG.md > notes.md
+          if ! [ -s notes.md ]; then
+            echo "::warning::CHANGELOG.md has no section for ${ver} (entries still under [Unreleased]?); the release body will only link the changelog"
+            echo "See [CHANGELOG.md](CHANGELOG.md)." > notes.md
+          fi
+          {
+            echo
+            echo "### Checksums"
+            echo '```'
+            cat release/*.sha256
+            echo '```'
+          } >> notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: notes.md
+          files: release/*
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
   # Renders the Homebrew formula from the released tarballs' checksums and pushes
   # it to the `homebrew-tap` repo over SSH using a write-scoped deploy key. Gated
   # on the `HOMEBREW_TAP` repo variable; the key lives in the
   # `HOMEBREW_TAP_DEPLOY_KEY` secret. (To disable, unset the variable.)
+  # Skipped for pre-release tags: the tap must only ever serve stable releases.
   homebrew:
     name: update Homebrew tap
     needs: [build, release]
-    if: startsWith(github.ref, 'refs/tags/') && vars.HOMEBREW_TAP == 'true'
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-') && vars.HOMEBREW_TAP == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
-        with: { path: dl }
+        with:
+          pattern: "{aarch64-apple-darwin,*-unknown-linux-musl}"
+          path: dl
       - name: Render formula
         run: |
-          sudo apt-get update && sudo apt-get install -y gettext-base
+          command -v envsubst >/dev/null || { sudo apt-get update && sudo apt-get install -y gettext-base; }
           export VERSION="${GITHUB_REF_NAME#v}"
           export HOMEPAGE="https://github.com/${GITHUB_REPOSITORY}"
           base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
           sha() { cut -d' ' -f1 "dl/$1/xclaude-${GITHUB_REF_NAME}-$1.tar.gz.sha256"; }
-          export URL_MAC="${base}/xclaude-${GITHUB_REF_NAME}-aarch64-apple-darwin.tar.gz"
-          export SHA_MAC="$(sha aarch64-apple-darwin)"
-          export URL_LINUX_X64="${base}/xclaude-${GITHUB_REF_NAME}-x86_64-unknown-linux-musl.tar.gz"
-          export SHA_LINUX_X64="$(sha x86_64-unknown-linux-musl)"
-          export URL_LINUX_ARM="${base}/xclaude-${GITHUB_REF_NAME}-aarch64-unknown-linux-musl.tar.gz"
-          export SHA_LINUX_ARM="$(sha aarch64-unknown-linux-musl)"
-          # Intel macOS has no prebuilt binary: the formula builds from the source
-          # tarball, so publish its URL + checksum too. The curl runs inside a
-          # command substitution, where -f can't fail the job — so retry (codeload
-          # can lag right after a tag lands) and reject an empty/empty-input hash
-          # instead of shipping a formula that can never install.
-          export URL_SRC="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
-          export SHA_SRC="$(curl -fsSL --retry 5 --retry-all-errors "$URL_SRC" | sha256sum | cut -d' ' -f1)"
-          if [ -z "$SHA_SRC" ] || [ "$SHA_SRC" = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ]; then
-            echo "::error::source tarball not fetchable at $URL_SRC — refusing to render a broken formula"
-            exit 1
-          fi
-          envsubst < packaging/xclaude.rb.tmpl > xclaude.rb
+          # Plain assignments (no `export VAR=$(...)`): under `bash -e` a
+          # failing command substitution must fail the step, not continue
+          # with an empty value (SC2155).
+          URL_MAC="${base}/xclaude-${GITHUB_REF_NAME}-aarch64-apple-darwin.tar.gz"
+          SHA_MAC="$(sha aarch64-apple-darwin)"
+          URL_LINUX_X64="${base}/xclaude-${GITHUB_REF_NAME}-x86_64-unknown-linux-musl.tar.gz"
+          SHA_LINUX_X64="$(sha x86_64-unknown-linux-musl)"
+          URL_LINUX_ARM="${base}/xclaude-${GITHUB_REF_NAME}-aarch64-unknown-linux-musl.tar.gz"
+          SHA_LINUX_ARM="$(sha aarch64-unknown-linux-musl)"
+          # Intel macOS has no prebuilt binary (no capacity-viable x86_64 mac
+          # runners): the formula builds from the source tarball, so publish
+          # its URL + checksum too. Download to a file so a curl failure
+          # (including a partial body) fails the step directly.
+          URL_SRC="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          curl -fsSL --retry 5 --retry-all-errors -o src.tar.gz "$URL_SRC"
+          SHA_SRC="$(sha256sum src.tar.gz | cut -d' ' -f1)"
+          # A formula with a malformed checksum can never install; fail closed.
+          for v in SHA_MAC SHA_LINUX_X64 SHA_LINUX_ARM SHA_SRC; do
+            s="${!v}"
+            if [ "${#s}" -ne 64 ] || [[ "$s" == *[!0-9a-f]* ]]; then
+              echo "::error::$v is not a valid sha256: '$s'"
+              exit 1
+            fi
+          done
+          export URL_MAC SHA_MAC URL_LINUX_X64 SHA_LINUX_X64
+          export URL_LINUX_ARM SHA_LINUX_ARM URL_SRC SHA_SRC
+          # Explicit variable list: envsubst must never blank an unrelated
+          # ${...} a future template edit might introduce.
+          envsubst '${VERSION} ${HOMEPAGE} ${URL_MAC} ${SHA_MAC} ${URL_LINUX_X64} ${SHA_LINUX_X64} ${URL_LINUX_ARM} ${SHA_LINUX_ARM} ${URL_SRC} ${SHA_SRC}' \
+            < packaging/xclaude.rb.tmpl > xclaude.rb
           cat xclaude.rb
       - name: Push to the tap
         env:
