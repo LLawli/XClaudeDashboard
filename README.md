@@ -96,6 +96,7 @@ lists `sha256` checksums; verify with:
 
 ```sh
 sha256sum -c xclaude-v0.1.0-x86_64-unknown-linux-musl.tar.gz.sha256
+# macOS has no sha256sum; use:  shasum -a 256 -c <file>.sha256
 ```
 
 ### deb / rpm
@@ -105,7 +106,7 @@ release:
 
 ```sh
 sudo dpkg -i xclaude_0.1.0_amd64.deb   # Debian/Ubuntu
-sudo rpm -i xclaude-0.1.0.x86_64.rpm   # Fedora/RHEL (or dnf install ./…)
+sudo rpm -i xclaude-0.1.0-1.x86_64.rpm # Fedora/RHEL (or dnf install ./…)
 ```
 
 ### Cargo
