@@ -2,7 +2,7 @@
 
 Real-time TUI dashboard for your Claude Code usage: watch the 5-hour and
 7-day rate-limit windows, burn rate, per-model / per-device breakdown and
-estimated cost — live in your terminal, updating as you work.
+estimated cost, live in your terminal, updating as you work.
 
 Claude Code enforces usage windows, but you usually only notice you are
 close to the cap when you hit it. `xclaude` answers, at a glance: *how much
@@ -14,7 +14,7 @@ until the reset?*
 > and has no standalone use.** It is a companion viewer: XClaudeUsage's
 > statusline hooks record every Claude Code session into a SQLite log
 > (`~/.claude/data/xclaude-usage.db`), and `xclaude` reads that log.
-> Install XClaudeUsage first and let it run at least once — otherwise
+> Install XClaudeUsage first and let it run at least once; otherwise
 > `xclaude` exits with an error because there is nothing to show.
 
 ```text
@@ -43,7 +43,7 @@ until the reset?*
 - **Two views**: the 5-hour session window and the 7-day window, switchable
   with one key (or a mouse click on the tabs).
 - **Live**: detects new writes to the SQLite log within ~200 ms
-  (`PRAGMA data_version` polling) — no restart, no manual refresh.
+  (`PRAGMA data_version` polling): no restart, no manual refresh.
 - **Burn rate sparkline** with per-minute binning, peak marker and an
   **ETA to 100%** that tells you whether the budget survives until the reset
   (`✓`) or runs out first (`⚠`).
@@ -57,14 +57,14 @@ until the reset?*
 
 ## Install
 
-`xclaude` is a single self-contained binary. Pick whichever path is easiest —
+`xclaude` is a single self-contained binary. Pick whichever path is easiest;
 every one ships the same binary.
 
 ### One-line install / update (picks the best method)
 
-Runs anywhere and installs via the most appropriate route it finds — Homebrew,
+Runs anywhere and installs via the most appropriate route it finds: Homebrew,
 your distro's `.deb`/`.rpm`, `mise`, `cargo`, or a prebuilt binary, in that
-order. **Re-run it to update** — every route installs-or-upgrades in place:
+order. **Re-run it to update**; every route installs-or-upgrades in place:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/LLawli/XClaudeDashboard/main/install.sh | sh
@@ -90,12 +90,13 @@ mise use -g github:LLawli/XClaudeDashboard
 ### Prebuilt binaries (Linux, macOS, Windows)
 
 Grab a tarball/zip from the
-[releases page](https://github.com/LLawli/XClaudeDashboard/releases) —
+[releases page](https://github.com/LLawli/XClaudeDashboard/releases);
 Linux binaries are static (musl), so they run on any distro. Each release
 lists `sha256` checksums; verify with:
 
 ```sh
 sha256sum -c xclaude-v0.1.0-x86_64-unknown-linux-musl.tar.gz.sha256
+# macOS has no sha256sum; use:  shasum -a 256 -c <file>.sha256
 ```
 
 ### deb / rpm
@@ -105,7 +106,7 @@ release:
 
 ```sh
 sudo dpkg -i xclaude_0.1.0_amd64.deb   # Debian/Ubuntu
-sudo rpm -i xclaude-0.1.0.x86_64.rpm   # Fedora/RHEL (or dnf install ./…)
+sudo rpm -i xclaude-0.1.0-1.x86_64.rpm # Fedora/RHEL (or dnf install ./…)
 ```
 
 ### Cargo
@@ -123,13 +124,13 @@ Requires Rust 1.85+. Building from a clone works the same way:
 xclaude
 ```
 
-That's it — it finds the XClaudeUsage database on its own. Options:
+That's it: it finds the XClaudeUsage database on its own. Options:
 
 | Flag | Env var | Default | Description |
 |---|---|---|---|
 | `--db-path <PATH>` | `XCLAUDE_DB` | `~/.claude/data/xclaude-usage.db` | SQLite log written by XClaudeUsage |
 | `--cloud-config <PATH>` | `XCLAUDE_CLOUD_CONFIG` | `~/.claude/data/xclaude-cloud.json` | Turso credentials for cloud sync |
-| `--tick-ms <MS>` | — | `200` | DB change-poll interval |
+| `--tick-ms <MS>` | (none) | `200` | DB change-poll interval |
 
 ### Keys
 
@@ -145,7 +146,7 @@ The tabs and the `[v] verbose` footer chip are also clickable.
 ### Terminal
 
 Any UTF-8 terminal works; no Nerd Fonts needed. A truecolor (24-bit)
-terminal is recommended for the full palette. The layout adapts to width —
+terminal is recommended for the full palette. The layout adapts to width:
 the usage gauge and the cost chart appear on wider terminals and drop out
 gracefully on narrow ones.
 

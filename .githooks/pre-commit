@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
-# Pre-commit hook: block commits that don't match the project's rustfmt style.
-# Mirrors the CI `fmt` check (cargo fmt --all -- --check under stable rustfmt,
-# pinned by rust-toolchain.toml) so formatting drift never reaches CI again.
+# Pre-commit hook: block commits whose STAGED content doesn't match the
+# project's rustfmt style. Mirrors the CI `fmt` check (cargo fmt --all --
+# --check under stable rustfmt, pinned by rust-toolchain.toml) so formatting
+# drift never reaches CI again.
+#
+# The staged tree is checked out into a temp dir and checked there: the
+# working tree can't mask an unformatted staged hunk (fmt run but not
+# re-staged) and unrelated dirty files can't block a clean commit.
 #
 # Enable once per clone:  git config core.hooksPath .githooks
 set -euo pipefail
@@ -11,8 +16,12 @@ if ! command -v cargo >/dev/null 2>&1; then
     exit 0
 fi
 
-if ! cargo fmt --all -- --check; then
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+git checkout-index --prefix="$tmpdir/" -a
+
+if ! (cd "$tmpdir" && cargo fmt --all -- --check); then
     echo >&2
-    echo "pre-commit: formatting check failed. Run 'cargo fmt --all' and re-stage." >&2
+    echo "pre-commit: staged formatting check failed. Run 'cargo fmt --all' and re-stage." >&2
     exit 1
 fi

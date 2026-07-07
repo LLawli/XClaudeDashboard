@@ -10,7 +10,7 @@ class Xclaude < Formula
       sha256 "${SHA_MAC}"
     end
     on_intel do
-      # No prebuilt Intel-macOS binary is published — build from source.
+      # No prebuilt Intel-macOS binary is published; build from source.
       url "${URL_SRC}"
       sha256 "${SHA_SRC}"
       depends_on "rust" => :build
@@ -41,7 +41,7 @@ class Xclaude < Formula
       xclaude is a companion viewer for XClaudeUsage:
         https://github.com/SrDarf/XClaudeUsage
       Install XClaudeUsage and let it run at least once before launching
-      xclaude — it reads the SQLite log XClaudeUsage writes.
+      xclaude; it reads the SQLite log XClaudeUsage writes.
     EOS
   end
 
