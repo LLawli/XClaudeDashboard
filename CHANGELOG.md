@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-07
+
 ### Added
 
 - One-line installer (`install.sh`): picks the best available method
@@ -51,5 +53,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Apple Silicon, Windows x86_64) with sha256 checksums, `.deb`/`.rpm`
   packages, and Homebrew tap updates.
 
-[Unreleased]: https://github.com/LLawli/XClaudeDashboard/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/LLawli/XClaudeDashboard/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/LLawli/XClaudeDashboard/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/LLawli/XClaudeDashboard/releases/tag/v0.1.0
