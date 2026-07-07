@@ -57,7 +57,20 @@ until the reset?*
 
 ## Install
 
-Pick whichever is easiest — every path ships the same binary.
+`xclaude` is a single self-contained binary. Pick whichever path is easiest —
+every one ships the same binary.
+
+### One-line install / update (picks the best method)
+
+Runs anywhere and installs via the most appropriate route it finds — Homebrew,
+your distro's `.deb`/`.rpm`, `mise`, `cargo`, or a prebuilt binary, in that
+order. **Re-run it to update** — every route installs-or-upgrades in place:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/LLawli/XClaudeDashboard/main/install.sh | sh
+```
+
+Prefer a specific method? Pick one below.
 
 ### Homebrew (macOS / Linux)
 
@@ -67,8 +80,11 @@ brew install LLawli/tap/xclaude
 
 ### mise
 
+[mise](https://mise.jdx.dev) fetches the prebuilt binary straight from the
+release (via its `github` backend) and keeps it up to date:
+
 ```sh
-mise use -g "ubi:LLawli/XClaudeDashboard[exe=xclaude]@latest"
+mise use -g github:LLawli/XClaudeDashboard
 ```
 
 ### Prebuilt binaries (Linux, macOS, Windows)
