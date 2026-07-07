@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- One-line installer (`install.sh`): picks the best available method
+  (Homebrew → `.deb`/`.rpm` → mise → cargo → prebuilt tarball) and
+  installs-or-upgrades in place on re-run.
+
 ## [0.1.0] - 2026-07-07
 
 ### Added
