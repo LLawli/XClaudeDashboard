@@ -1,17 +1,28 @@
+# Release pipeline. A `v*.*.*` tag compiles the binary once per target, packages
+# it many ways (tarball/zip + .deb/.rpm) — "compile once, repackage many" — and
+# publishes a GitHub Release with checksums and the CHANGELOG section, then
+# updates the Homebrew tap formula.
+#
+# Cut a release with:  git tag v0.1.0 && git push origin v0.1.0
+# A manual run (workflow_dispatch) builds the matrix only (no release), to test
+# the cross-compiles without side effects.
+
 name: release
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ["v*.*.*"]
   workflow_dispatch:
 
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   build:
-    name: ${{ matrix.target }}
+    name: build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -19,19 +30,184 @@ jobs:
         include:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
+            use-cross: true
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
+            use-cross: true
           - target: aarch64-apple-darwin
             os: macos-14
+            use-cross: false
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+            use-cross: false
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - uses: taiki-e/upload-rust-binary-action@v1
+      - uses: Swatinem/rust-cache@v2
         with:
-          bin: xclaude
-          target: ${{ matrix.target }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+          key: ${{ matrix.target }}
+      - name: Install cross
+        if: matrix.use-cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+      - name: Build
+        shell: bash
+        run: |
+          if [ "${{ matrix.use-cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }} --locked
+          else
+            cargo build --release --target ${{ matrix.target }} --locked
+          fi
+      - name: Package (unix)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: |
+          dist="xclaude-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir "$dist"
+          cp "target/${{ matrix.target }}/release/xclaude" "$dist"/
+          cp README.md CHANGELOG.md LICENSE "$dist"/
+          tar -czf "${dist}.tar.gz" "$dist"
+          shasum -a 256 "${dist}.tar.gz" > "${dist}.tar.gz.sha256"
+      - name: Package (windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          dist="xclaude-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir "$dist"
+          cp "target/${{ matrix.target }}/release/xclaude.exe" "$dist"/
+          cp README.md CHANGELOG.md LICENSE "$dist"/
+          7z a "${dist}.zip" "$dist" >/dev/null
+          sha256sum "${dist}.zip" > "${dist}.zip.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            xclaude-*.tar.gz*
+            xclaude-*.zip*
+
+  release:
+    name: publish GitHub Release
+    needs: [build]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
+      - name: Assemble release notes + flatten artifacts
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          mkdir -p release
+          find artifacts -type f -name 'xclaude-*' -exec cp {} release/ \;
+          # Extract this version's CHANGELOG section (Keep a Changelog).
+          awk -v hdr="## [$ver]" '
+            index($0, hdr) == 1 { flag = 1; next }
+            flag && index($0, "## [") == 1 { exit }
+            flag { print }
+          ' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "See [CHANGELOG.md](CHANGELOG.md)." > notes.md
+          {
+            echo
+            echo "### Checksums"
+            echo '```'
+            cat release/*.sha256 2>/dev/null || true
+            echo '```'
+          } >> notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: notes.md
+          files: release/*
+
+  # .deb + .rpm for both Linux arches, from the same prebuilt binaries.
+  packages:
+    name: nfpm (deb + rpm)
+    needs: [build, release]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*-unknown-linux-musl"
+          path: dist
+      - name: Install nfpm
+        run: |
+          url=$(curl -sSfL https://api.github.com/repos/goreleaser/nfpm/releases/latest \
+            | grep -o 'https://[^"]*_amd64\.deb' | head -1)
+          curl -sSfL "$url" -o nfpm.deb
+          sudo dpkg -i nfpm.deb
+      - name: Build packages and attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y gettext-base
+          export NFPM_VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p out
+          build() { # rust-arch nfpm-arch
+            local t="$1-unknown-linux-musl"
+            tar -xzf "dist/${t}/xclaude-${GITHUB_REF_NAME}-${t}.tar.gz"
+            export NFPM_ARCH="$2" NFPM_BIN="xclaude-${GITHUB_REF_NAME}-${t}/xclaude"
+            # nfpm doesn't env-expand `contents.src`, so render the config first.
+            envsubst < packaging/nfpm.yaml.tmpl > nfpm.yaml
+            nfpm package -f nfpm.yaml -p deb -t out/
+            nfpm package -f nfpm.yaml -p rpm -t out/
+          }
+          build x86_64 amd64
+          build aarch64 arm64
+          ls -l out/
+          gh release upload "$GITHUB_REF_NAME" out/*.deb out/*.rpm --clobber
+
+  # Renders the Homebrew formula from the released tarballs' checksums and pushes
+  # it to the `homebrew-tap` repo over SSH using a write-scoped deploy key. Gated
+  # on the `HOMEBREW_TAP` repo variable; the key lives in the
+  # `HOMEBREW_TAP_DEPLOY_KEY` secret. (To disable, unset the variable.)
+  homebrew:
+    name: update Homebrew tap
+    needs: [build, release]
+    if: startsWith(github.ref, 'refs/tags/') && vars.HOMEBREW_TAP == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: dl }
+      - name: Render formula
+        run: |
+          sudo apt-get update && sudo apt-get install -y gettext-base
+          export VERSION="${GITHUB_REF_NAME#v}"
+          export HOMEPAGE="https://github.com/${GITHUB_REPOSITORY}"
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          sha() { cut -d' ' -f1 "dl/$1/xclaude-${GITHUB_REF_NAME}-$1.tar.gz.sha256"; }
+          export URL_MAC="${base}/xclaude-${GITHUB_REF_NAME}-aarch64-apple-darwin.tar.gz"
+          export SHA_MAC="$(sha aarch64-apple-darwin)"
+          export URL_LINUX_X64="${base}/xclaude-${GITHUB_REF_NAME}-x86_64-unknown-linux-musl.tar.gz"
+          export SHA_LINUX_X64="$(sha x86_64-unknown-linux-musl)"
+          export URL_LINUX_ARM="${base}/xclaude-${GITHUB_REF_NAME}-aarch64-unknown-linux-musl.tar.gz"
+          export SHA_LINUX_ARM="$(sha aarch64-unknown-linux-musl)"
+          # Intel macOS has no prebuilt binary: the formula builds from the source
+          # tarball, so publish its URL + checksum too.
+          export URL_SRC="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          export SHA_SRC="$(curl -fsSL "$URL_SRC" | sha256sum | cut -d' ' -f1)"
+          envsubst < packaging/xclaude.rb.tmpl > xclaude.rb
+          cat xclaude.rb
+      - name: Push to the tap
+        env:
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/tap_key
+          chmod 600 ~/.ssh/tap_key
+          # Pin GitHub's published ed25519 host key instead of trust-on-first-use
+          # `ssh-keyscan` (which would accept whatever a MITM offered at runtime).
+          printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' >> ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes"
+          git clone "git@github.com:${GITHUB_REPOSITORY_OWNER}/homebrew-tap.git" tap
+          install -D xclaude.rb tap/Formula/xclaude.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/xclaude.rb
+          git diff --cached --quiet || git commit -m "xclaude ${GITHUB_REF_NAME}"
+          git push

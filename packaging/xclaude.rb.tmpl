@@ -1,0 +1,51 @@
+class Xclaude < Formula
+  desc "Real-time TUI dashboard for XClaudeUsage"
+  homepage "${HOMEPAGE}"
+  version "${VERSION}"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "${URL_MAC}"
+      sha256 "${SHA_MAC}"
+    end
+    on_intel do
+      # No prebuilt Intel-macOS binary is published — build from source.
+      url "${URL_SRC}"
+      sha256 "${SHA_SRC}"
+      depends_on "rust" => :build
+    end
+  end
+
+  on_linux do
+    on_intel do
+      url "${URL_LINUX_X64}"
+      sha256 "${SHA_LINUX_X64}"
+    end
+    on_arm do
+      url "${URL_LINUX_ARM}"
+      sha256 "${SHA_LINUX_ARM}"
+    end
+  end
+
+  def install
+    if OS.mac? && Hardware::CPU.intel?
+      system "cargo", "install", *std_cargo_args
+    else
+      bin.install "xclaude"
+    end
+  end
+
+  def caveats
+    <<~EOS
+      xclaude is a companion viewer for XClaudeUsage:
+        https://github.com/SrDarf/XClaudeUsage
+      Install XClaudeUsage and let it run at least once before launching
+      xclaude — it reads the SQLite log XClaudeUsage writes.
+    EOS
+  end
+
+  test do
+    assert_match "xclaude", shell_output("#{bin}/xclaude --version")
+  end
+end
