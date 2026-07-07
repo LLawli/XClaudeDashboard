@@ -187,9 +187,16 @@ jobs:
           export URL_LINUX_ARM="${base}/xclaude-${GITHUB_REF_NAME}-aarch64-unknown-linux-musl.tar.gz"
           export SHA_LINUX_ARM="$(sha aarch64-unknown-linux-musl)"
           # Intel macOS has no prebuilt binary: the formula builds from the source
-          # tarball, so publish its URL + checksum too.
+          # tarball, so publish its URL + checksum too. The curl runs inside a
+          # command substitution, where -f can't fail the job — so retry (codeload
+          # can lag right after a tag lands) and reject an empty/empty-input hash
+          # instead of shipping a formula that can never install.
           export URL_SRC="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
-          export SHA_SRC="$(curl -fsSL "$URL_SRC" | sha256sum | cut -d' ' -f1)"
+          export SHA_SRC="$(curl -fsSL --retry 5 --retry-all-errors "$URL_SRC" | sha256sum | cut -d' ' -f1)"
+          if [ -z "$SHA_SRC" ] || [ "$SHA_SRC" = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ]; then
+            echo "::error::source tarball not fetchable at $URL_SRC — refusing to render a broken formula"
+            exit 1
+          fi
           envsubst < packaging/xclaude.rb.tmpl > xclaude.rb
           cat xclaude.rb
       - name: Push to the tap
