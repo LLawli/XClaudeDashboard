@@ -13,7 +13,7 @@ be absent without ever losing data.
 
 ```text
 Claude Code sessions
-        │  (statusline hooks — XClaudeUsage, separate project)
+        │  (statusline hooks from XClaudeUsage, a separate project)
         ▼
 ~/.claude/data/xclaude-usage.db          (SQLite, WAL)
         │  five_hour_window / seven_day_window   singleton window rows
@@ -64,7 +64,7 @@ xclaude ──── polls PRAGMA data_version every tick (200 ms default)
   pull cap, 5 h retention) so both tools can sync interchangeably without
   coordinating.
 - **Bundled everything.** `rusqlite/bundled` and `reqwest` with
-  rustls + webpki-roots mean no system SQLite, OpenSSL or CA store — which
+  rustls + webpki-roots mean no system SQLite, OpenSSL or CA store, which
   is what makes fully static musl binaries (and the "runs on any distro"
   install story) possible.
 - **Pricing is best-effort.** Costs come from LiteLLM's public JSON with
