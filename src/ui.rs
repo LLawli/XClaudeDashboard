@@ -409,15 +409,15 @@ fn render_burn_card(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     frame.render_widget(sparkline, inner);
     // Mark the peak column's top cell — anchors the "peak …/min" caption and
     // carries the "hot" signal independently of color (a11y / low-color safe).
-    if let Some(i) = peak_col {
-        if (i as u16) < inner.width {
-            frame.buffer_mut().set_string(
-                inner.x + i as u16,
-                inner.y,
-                "◆",
-                Style::default().fg(theme.palette.warning),
-            );
-        }
+    if let Some(i) = peak_col
+        && (i as u16) < inner.width
+    {
+        frame.buffer_mut().set_string(
+            inner.x + i as u16,
+            inner.y,
+            "◆",
+            Style::default().fg(theme.palette.warning),
+        );
     }
 }
 
