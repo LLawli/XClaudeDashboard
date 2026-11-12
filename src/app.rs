@@ -68,6 +68,12 @@ pub struct App {
     /// When true, the legend groups by device (`local` + remote slugs);
     /// when false, it groups by model. Toggled with `v` or the footer chip.
     pub verbose: bool,
+    /// The plan reports only the weekly window (Claude Ultra): no 5h row is
+    /// being written. See [`Window::weekly_only`].
+    pub weekly_only: bool,
+    /// Set once the user picks a tab; until then the view follows the plan
+    /// (7d for weekly-only plans, 5h otherwise).
+    pub view_pinned: bool,
 
     pub db_path: PathBuf,
     pub cloud_config_path: PathBuf,
@@ -114,6 +120,8 @@ impl App {
             frame_height: 0,
             spinner: SpinnerState::new(),
             verbose: false,
+            weekly_only: false,
+            view_pinned: false,
             db_path,
             cloud_config_path,
             prices_path,
@@ -211,6 +219,7 @@ impl App {
             }
             Action::RemoteFetch => self.spawn_remote_sync(),
             Action::SwitchView(kind) => {
+                self.view_pinned = true;
                 if self.view != kind {
                     self.view = kind;
                     if let Err(e) = self.refresh_from_db() {
@@ -251,7 +260,29 @@ impl App {
         Ok(changed)
     }
 
+    /// Reads both window rows to tell a weekly-only plan apart, and points an
+    /// unpinned view at the window the plan actually has.
+    fn detect_plan(&mut self) -> Result<()> {
+        let (five, seven) = {
+            let conn = self.conn()?;
+            (
+                Window::current(conn, WindowKind::FiveHour)?,
+                Window::current(conn, WindowKind::SevenDay)?,
+            )
+        };
+        self.weekly_only = Window::weekly_only(five.as_ref(), seven.as_ref());
+        if !self.view_pinned {
+            self.view = if self.weekly_only {
+                WindowKind::SevenDay
+            } else {
+                WindowKind::FiveHour
+            };
+        }
+        Ok(())
+    }
+
     fn refresh_from_db(&mut self) -> Result<()> {
+        self.detect_plan()?;
         let view = self.view;
         let (window, aggregate, device_aggregate, samples) = {
             let conn = self.conn()?;
@@ -294,6 +325,11 @@ impl App {
     }
 
     fn refresh_window_only(&mut self) -> Result<()> {
+        let prev_view = self.view;
+        self.detect_plan()?;
+        if self.view != prev_view {
+            return self.refresh_from_db();
+        }
         let view = self.view;
         let window = {
             let conn = self.conn()?;
@@ -538,6 +574,8 @@ mod tests {
             frame_height: 24,
             spinner: SpinnerState::new(),
             verbose: false,
+            weekly_only: false,
+            view_pinned: false,
             db_path: PathBuf::from("/tmp/xclaude-smoke.db"),
             cloud_config_path: PathBuf::from("/tmp/xclaude-smoke.json"),
             prices_path: PathBuf::from("/tmp/xclaude-smoke-prices.json"),
@@ -645,6 +683,71 @@ mod tests {
         }
     }
 
+    /// A weekly-only (Ultra) app on day 4 of a 7d window, 98% spent.
+    fn weekly_app() -> App {
+        let mut app = populated_app();
+        let start = 1_000_000;
+        app.view = WindowKind::SevenDay;
+        app.weekly_only = true;
+        app.window = Some(Window {
+            start_at: start,
+            resets_at: start + 7 * 86_400,
+            used_percentage: 98.0,
+            updated_at: 0,
+        });
+        app.now_secs = start + 3 * 86_400 + 17 * 3600;
+        app.rate.replace_from_samples([
+            (start + 3_600, 1_663_783),
+            (start + 86_400 + 3_600, 1_998_342),
+            (start + 2 * 86_400 + 3_600, 1_531_371),
+            (start + 3 * 86_400 + 3_600, 614_431),
+        ]);
+        app
+    }
+
+    fn render_text(app: &App, w: u16, h: u16) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal.draw(|f| crate::ui::render(f, app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn seven_day_view_shows_daily_pace() {
+        let app = weekly_app();
+        for (w, h) in [(190, 50), (160, 40), (100, 30)] {
+            let text = render_text(&app, w, h);
+            assert!(text.contains("per day"), "{w}x{h}: {text}");
+            assert!(text.contains("budget"), "{w}x{h}: {text}");
+        }
+        // wide: burn sparkline and the per-day chart side by side
+        let wide = render_text(&app, 160, 40);
+        assert!(wide.contains("burn rate"), "{wide}");
+        assert!(wide.contains("Thu") || wide.contains("Wed"), "{wide}");
+        for (w, h) in [(80, 24), (40, 10), (10, 3), (1, 1)] {
+            render_at(&app, w, h);
+        }
+        let mut closed = weekly_app();
+        closed.now_secs = 1_000_000 + 8 * 86_400;
+        closed.status = Status::Closed;
+        render_at(&closed, 160, 40);
+    }
+
+    #[test]
+    fn five_hour_view_has_no_daily_pace() {
+        let text = render_text(&populated_app(), 160, 40);
+        assert!(!text.contains("per day"), "{text}");
+    }
+
     /// Dev helper: `cargo test preview_dump -- --ignored --nocapture` prints the
     /// rendered dashboard as text. Ignored so it never runs in the normal suite.
     #[test]
@@ -652,7 +755,11 @@ mod tests {
     fn preview_dump() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
-        let app = populated_app();
+        let app = if std::env::var_os("XCLAUDE_PREVIEW_7D").is_some() {
+            weekly_app()
+        } else {
+            populated_app()
+        };
         let mut terminal = Terminal::new(TestBackend::new(150, 32)).unwrap();
         terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
         let buf = terminal.backend().buffer();

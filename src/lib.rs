@@ -6,6 +6,7 @@ pub mod config;
 pub mod db;
 mod event;
 mod format;
+mod pace;
 mod pricing;
 mod rate;
 mod remote;

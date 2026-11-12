@@ -1,14 +1,16 @@
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Bar, BarChart, Gauge, Padding, Paragraph, Sparkline, SparklineBar};
 use ratatui_bubbletea_components::{Help, KeyBinding, Spinner, SpinnerFrames};
 
 use crate::app::{App, FooterStatus, IDLE_THRESHOLD_PER_MIN, RATE_WINDOW_MIN, Status};
-use crate::format::compact;
+use crate::format::{compact, weekday_short};
+use crate::pace::{DAY_SECS, DailyPace, daily_pace, slice_count};
 use crate::pricing::cost_for;
-use crate::widgets::header::HeaderState;
+use crate::widgets::daily_bars::{DailyBar, DailyBars};
+use crate::widgets::header::{HeaderState, PaceSummary};
 use crate::widgets::legend::{DeviceRow, LegendRow, build_device_table, build_table};
 use crate::widgets::stacked_bar::StackedBar;
 use crate::window::WindowKind;
@@ -50,12 +52,17 @@ pub fn render(frame: &mut Frame, app: &App) {
     // 1-row footer strip. `spacing(1)` gives the cards room to breathe.
     // TABS_ROW must stay row 0 and the footer must stay the last row so the
     // tab/chip mouse hit-tests keep matching `tab_hit` / `footer_verbose_chip_range`.
+    // The 7d header carries one extra `per day` line.
+    let header_h = match app.view {
+        WindowKind::FiveHour => 6,
+        WindowKind::SevenDay => 7,
+    };
     let chunks = Layout::vertical([
-        Constraint::Length(1), // tabs
-        Constraint::Length(6), // header row (session + usage gauge)
-        Constraint::Min(5),    // burn-rate sparkline — fills the vertical slack
-        Constraint::Length(9), // breakdown band (models + tokens)
-        Constraint::Length(1), // footer
+        Constraint::Length(1),        // tabs
+        Constraint::Length(header_h), // header row (session + usage gauge)
+        Constraint::Min(5),           // burn-rate sparkline — fills the vertical slack
+        Constraint::Length(9),        // breakdown band (models + tokens)
+        Constraint::Length(1),        // footer
     ])
     .spacing(1)
     .split(frame.area());
@@ -75,7 +82,20 @@ pub fn render(frame: &mut Frame, app: &App) {
         render_header(frame, app, header_area);
     }
 
-    render_burn_card(frame, app, chunks[2]);
+    // 7d view: the per-day chart sits beside the burn sparkline when wide,
+    // and replaces it when narrow (the header still shows the rate).
+    let burn = chunks[2];
+    match daily_pace_of(app) {
+        Some(pace) if burn.width >= BREAKDOWN_SPLIT_WIDTH => {
+            let cols = Layout::horizontal([Constraint::Fill(3), Constraint::Fill(2)])
+                .spacing(1)
+                .split(burn);
+            render_burn_card(frame, app, cols[0]);
+            render_daily_card(frame, app, &pace, cols[1]);
+        }
+        Some(pace) => render_daily_card(frame, app, &pace, burn),
+        None => render_burn_card(frame, app, burn),
+    }
 
     // Breakdown band: the models card, plus a token-composition chart beside it
     // when the terminal is wide enough.
@@ -104,10 +124,14 @@ fn render_tabs(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     // background), the inactive one is muted. tab_hit stays a 50/50 width split.
     let active = theme.title;
     let inactive = theme.muted;
-    let (style_5h, style_7d) = match app.view {
+    let (mut style_5h, style_7d) = match app.view {
         WindowKind::FiveHour => (active, inactive),
         WindowKind::SevenDay => (inactive, active),
     };
+    // A plan without a 5h window (Claude Ultra) keeps the tab, struck through.
+    if app.weekly_only {
+        style_5h = style_5h.add_modifier(Modifier::CROSSED_OUT);
+    }
 
     let tab_5h = Paragraph::new("5h (h)")
         .alignment(Alignment::Center)
@@ -175,8 +199,82 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         eta_color,
         rate_per_min: app.rate.rate_per_minute(app.now_secs, RATE_WINDOW_MIN),
         rate_window_min: RATE_WINDOW_MIN,
+        pace: daily_pace_of(app).map(|p| PaceSummary {
+            avg_per_day: p.avg_per_day,
+            budget_per_day: p.budget_per_day,
+            today: p.today_spent().zip(p.today_budget),
+        }),
     };
     frame.render_widget(&state, area);
+}
+
+/// Per-day pace for the 7d view; `None` in the 5h view or without a window.
+fn daily_pace_of(app: &App) -> Option<DailyPace> {
+    if app.view != WindowKind::SevenDay {
+        return None;
+    }
+    let w = app.window?;
+    let n = slice_count(w.start_at, w.resets_at);
+    if n == 0 {
+        return None;
+    }
+    // Exact 24 h slices from the window start (the reset hour is the boundary).
+    let day_output = app
+        .rate
+        .binned_series(w.start_at, w.start_at + n as i64 * DAY_SECS, n as u32);
+    Some(daily_pace(
+        w.start_at,
+        w.resets_at,
+        app.now_secs,
+        w.used_percentage,
+        &day_output,
+    ))
+}
+
+/// One bar per day of the window: past days show what was spent (amber when
+/// above an even split of the week), today is coded against today's budget,
+/// and the days ahead show the daily budget that lasts until the reset.
+fn render_daily_card(frame: &mut Frame, app: &App, pace: &DailyPace, area: Rect) {
+    let theme = crate::style::bubble_theme();
+    let inner = card(frame, area, " per day ");
+    let Some(w) = app.window else {
+        return;
+    };
+    let even_split = 100.0 / pace.days.len().max(1) as f64;
+    let bars: Vec<DailyBar> = pace
+        .days
+        .iter()
+        .enumerate()
+        .map(|(i, &spent)| {
+            let midday = w.start_at + i as i64 * DAY_SECS + DAY_SECS / 2;
+            let label = weekday_short(midday);
+            match pace.today {
+                Some(t) if i == t => DailyBar {
+                    label,
+                    value: spent,
+                    color: crate::style::pace_color(spent, pace.today_budget.unwrap_or(0.0)),
+                    label_style: theme.accent.add_modifier(Modifier::BOLD),
+                },
+                Some(t) if i > t => DailyBar {
+                    label,
+                    value: pace.budget_per_day.unwrap_or(0.0),
+                    color: theme.palette.muted,
+                    label_style: theme.muted,
+                },
+                _ => DailyBar {
+                    label,
+                    value: spent,
+                    color: if spent > even_split {
+                        theme.palette.warning
+                    } else {
+                        theme.palette.foreground
+                    },
+                    label_style: theme.muted,
+                },
+            }
+        })
+        .collect();
+    frame.render_widget(DailyBars { bars: &bars }, inner);
 }
 
 /// The "hero" metric: a usage Gauge filling the header's right card when wide.
@@ -311,15 +409,15 @@ fn render_burn_card(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     frame.render_widget(sparkline, inner);
     // Mark the peak column's top cell — anchors the "peak …/min" caption and
     // carries the "hot" signal independently of color (a11y / low-color safe).
-    if let Some(i) = peak_col {
-        if (i as u16) < inner.width {
-            frame.buffer_mut().set_string(
-                inner.x + i as u16,
-                inner.y,
-                "◆",
-                Style::default().fg(theme.palette.warning),
-            );
-        }
+    if let Some(i) = peak_col
+        && (i as u16) < inner.width
+    {
+        frame.buffer_mut().set_string(
+            inner.x + i as u16,
+            inner.y,
+            "◆",
+            Style::default().fg(theme.palette.warning),
+        );
     }
 }
 

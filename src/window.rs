@@ -18,6 +18,10 @@ impl WindowKind {
     }
 }
 
+/// Slack between the 5h and 7d row writes of one statusline hook (they land
+/// within the same second in practice).
+const SAME_HOOK_SLACK_SECS: i64 = 60;
+
 /// Snapshot of the active session window. Read from `five_hour_window` or
 /// `seven_day_window` (both written by `xclaude-usage.js` in XClaudeUsage).
 /// All timestamps are **epoch seconds**, both tables are singletons (`id = 1`).
@@ -57,6 +61,18 @@ impl Window {
             })
             .optional()?;
         Ok(row)
+    }
+
+    /// True when the plan only reports the weekly window (Claude Ultra). Every
+    /// statusline hook writes both rows in the same run, so a 5h row that is
+    /// missing, or older than the 7d row, means the last payloads carried no
+    /// 5h window at all.
+    pub fn weekly_only(five: Option<&Self>, seven: Option<&Self>) -> bool {
+        match (five, seven) {
+            (_, None) => false,
+            (None, Some(_)) => true,
+            (Some(f), Some(s)) => s.updated_at - f.updated_at > SAME_HOOK_SLACK_SECS,
+        }
     }
 
     #[allow(dead_code)]
@@ -199,6 +215,38 @@ mod tests {
         assert!(w.is_active(10_000));
         assert!(!w.is_active(19_000)); // exclusive
         assert!(!w.is_active(20_000));
+    }
+
+    fn updated(updated_at: i64) -> Window {
+        Window {
+            start_at: 0,
+            resets_at: 1,
+            used_percentage: 0.0,
+            updated_at,
+        }
+    }
+
+    #[test]
+    fn weekly_only_when_five_hour_missing_or_stale() {
+        let seven = updated(1_000_000);
+        assert!(Window::weekly_only(None, Some(&seven)));
+        // Ultra: the 5h row froze days ago while the 7d row keeps updating.
+        assert!(Window::weekly_only(
+            Some(&updated(1_000_000 - 4 * 86_400)),
+            Some(&seven)
+        ));
+    }
+
+    #[test]
+    fn not_weekly_only_when_both_rows_move_together() {
+        let seven = updated(1_000_000);
+        assert!(!Window::weekly_only(
+            Some(&updated(1_000_000)),
+            Some(&seven)
+        ));
+        assert!(!Window::weekly_only(Some(&updated(999_999)), Some(&seven)));
+        assert!(!Window::weekly_only(None, None));
+        assert!(!Window::weekly_only(Some(&seven), None));
     }
 
     #[test]
