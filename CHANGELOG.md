@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-12
+
 ### Added
 
 - Daily pace in the 7-day view: a `per day` header line (average spend per
@@ -68,6 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Apple Silicon, Windows x86_64) with sha256 checksums, `.deb`/`.rpm`
   packages, and Homebrew tap updates.
 
-[Unreleased]: https://github.com/LLawli/XClaudeDashboard/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/LLawli/XClaudeDashboard/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/LLawli/XClaudeDashboard/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/LLawli/XClaudeDashboard/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/LLawli/XClaudeDashboard/releases/tag/v0.1.0
