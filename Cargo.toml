@@ -2,7 +2,7 @@
 name = "xclaude"
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.89"
 description = "Real-time TUI dashboard for XClaudeUsage"
 license = "MIT"
 repository = "https://github.com/LLawli/XClaudeDashboard"
@@ -19,7 +19,7 @@ ratatui            = "0.30"
 crossterm          = { version = "0.29", features = ["event-stream"] }
 ratatui-bubbletea-theme      = "0.2.0"
 ratatui-bubbletea-components = "0.2.0"
-rusqlite           = { version = "0.39", features = ["bundled"] }
+rusqlite           = { version = "0.42", features = ["bundled"] }
 tokio              = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time", "fs"] }
 reqwest            = { version = "0.13", default-features = false, features = ["json", "rustls", "webpki-roots"] }
 serde              = { version = "1", features = ["derive"] }

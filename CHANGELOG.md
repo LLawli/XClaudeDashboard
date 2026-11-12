@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Dependencies updated past current RustSec advisories (rustls,
+  rustls-webpki, webpki-roots, quinn-proto, lru, rustix, and
+  libsqlite3-sys through rusqlite 0.42). The minimum Rust version is now
+  1.89, which rusqlite 0.42 requires.
+
 ## [0.2.0] - 2026-07-07
 
 ### Added
