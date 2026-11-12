@@ -4,7 +4,18 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{BorderType, Paragraph, Widget};
 
-use crate::format::{compact, duration_hms, iso_local_dated_hms, iso_local_hms};
+use crate::format::{compact, duration_hms, iso_local_dated_hms, iso_local_hms, pct_short};
+use crate::style::pace_color;
+
+/// Daily pace figures for the 7d view, in percent of the weekly quota.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PaceSummary {
+    pub avg_per_day: f64,
+    /// Even daily spend that lasts until the reset; `None` once closed.
+    pub budget_per_day: Option<f64>,
+    /// `(spent, budget)` for today's slice; `None` once closed.
+    pub today: Option<(f64, f64)>,
+}
 
 pub struct HeaderState {
     pub title: &'static str,
@@ -21,6 +32,8 @@ pub struct HeaderState {
     pub eta_color: Color,
     pub rate_per_min: f64,
     pub rate_window_min: u32,
+    /// Adds a `per day` line (7d view only).
+    pub pace: Option<PaceSummary>,
 }
 
 impl Widget for &HeaderState {
@@ -80,8 +93,13 @@ impl Widget for &HeaderState {
             Span::styled(eta_text, Style::default().fg(self.eta_color)),
         ]);
 
+        let mut lines = vec![session, output, remaining_line, eta];
+        if let Some(pace) = self.pace {
+            lines.push(pace_line(pace));
+        }
+
         // Blue, thick-bordered session card anchors it as the hero / active view.
-        let para = Paragraph::new(vec![session, output, remaining_line, eta]).block(
+        let para = Paragraph::new(lines).block(
             theme
                 .block_with_focus(true)
                 .border_type(BorderType::Thick)
@@ -89,6 +107,36 @@ impl Widget for &HeaderState {
         );
         para.render(area, buf);
     }
+}
+
+/// `per day    avg 26% • budget 0.6% • today 10% / 3.1%`: the average is
+/// coded against the budget, today's spend against today's share.
+fn pace_line(pace: PaceSummary) -> Line<'static> {
+    let theme = crate::style::bubble_theme();
+    let avg_style = match pace.budget_per_day {
+        Some(b) => Style::default().fg(pace_color(pace.avg_per_day, b)),
+        None => theme.text,
+    };
+    let mut spans = vec![
+        Span::raw("  per day    avg "),
+        Span::styled(pct_short(pace.avg_per_day), avg_style),
+    ];
+    if let Some(b) = pace.budget_per_day {
+        spans.push(theme.muted(" • budget "));
+        spans.push(Span::styled(
+            pct_short(b),
+            theme.accent.add_modifier(Modifier::BOLD),
+        ));
+    }
+    if let Some((spent, budget)) = pace.today {
+        spans.push(theme.muted(" • today "));
+        spans.push(Span::styled(
+            pct_short(spent),
+            Style::default().fg(pace_color(spent, budget)),
+        ));
+        spans.push(theme.muted(format!(" / {}", pct_short(budget))));
+    }
+    Line::from(spans)
 }
 
 #[cfg(test)]
@@ -127,6 +175,7 @@ mod tests {
             eta_color: Color::Green,
             rate_per_min: 200.0,
             rate_window_min: 15,
+            pace: None,
         }
     }
 
@@ -198,5 +247,42 @@ mod tests {
         let mut s = sample(Some(0));
         s.output_limit = 0;
         let _ = render(&s, 80, 6); // saturating_sub keeps it sane
+    }
+
+    #[test]
+    fn renders_pace_line_when_present() {
+        let mut s = sample(Some(7_200));
+        s.pace = Some(PaceSummary {
+            avg_per_day: 26.1,
+            budget_per_day: Some(0.62),
+            today: Some((10.4, 3.1)),
+        });
+        let text = buffer_text(&render(&s, 80, 7));
+        assert!(text.contains("per day"), "pace line missing: {text}");
+        assert!(text.contains("avg 26%"), "avg missing: {text}");
+        assert!(text.contains("budget 0.6%"), "budget missing: {text}");
+        assert!(text.contains("today 10% / 3.1%"), "today missing: {text}");
+    }
+
+    #[test]
+    fn closed_pace_line_shows_only_average() {
+        let mut s = sample(Some(7_200));
+        s.pace = Some(PaceSummary {
+            avg_per_day: 14.0,
+            budget_per_day: None,
+            today: None,
+        });
+        let text = buffer_text(&render(&s, 80, 7));
+        assert!(text.contains("avg 14%"), "avg missing: {text}");
+        assert!(
+            !text.contains("budget"),
+            "closed window has no budget: {text}"
+        );
+    }
+
+    #[test]
+    fn no_pace_line_by_default() {
+        let text = buffer_text(&render(&sample(Some(7_200)), 80, 7));
+        assert!(!text.contains("per day"), "5h view has no pace: {text}");
     }
 }

@@ -47,6 +47,20 @@ pub fn eta_color(eta_seconds: Option<u64>, until_reset: i64) -> Color {
     }
 }
 
+/// Severity color for spend against a daily budget: success within it,
+/// warning up to 25% over, error beyond that (or any spend on a zero budget).
+#[must_use]
+pub fn pace_color(spent: f64, budget: f64) -> Color {
+    let p = bubble_theme().palette;
+    if spent <= budget {
+        p.success
+    } else if spent <= budget * 1.25 {
+        p.warning
+    } else {
+        p.error
+    }
+}
+
 /// 3-stop heat ramp for the burn sparkline: muted (idle) → foreground (normal)
 /// → amber (spike), by a column's share of the window peak. Color is redundant
 /// with bar height, so the chart stays legible on low-color terminals.
@@ -102,6 +116,17 @@ mod tests {
         assert_eq!(eta_color(Some(600), 1_000), p.warning); // >= half the window
         assert_eq!(eta_color(Some(100), 1_000), p.error); // burning
         assert_eq!(eta_color(Some(60), -10), p.muted); // after reset
+    }
+
+    #[test]
+    fn pace_color_bands() {
+        let p = bubble_theme().palette;
+        assert_eq!(pace_color(0.5, 1.0), p.success);
+        assert_eq!(pace_color(1.0, 1.0), p.success);
+        assert_eq!(pace_color(1.2, 1.0), p.warning);
+        assert_eq!(pace_color(1.3, 1.0), p.error);
+        assert_eq!(pace_color(0.1, 0.0), p.error);
+        assert_eq!(pace_color(0.0, 0.0), p.success);
     }
 
     #[test]

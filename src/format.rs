@@ -74,6 +74,27 @@ pub fn iso_local_dated_hms(epoch_secs: i64) -> String {
         .unwrap_or_else(|_| "??? ?? ??:??:??".into())
 }
 
+/// Local-timezone short weekday (`Mon`, `Tue`, …) for an epoch-seconds instant.
+/// Returns `???` if the input is out of range.
+pub fn weekday_short(epoch_secs: i64) -> String {
+    let Ok(dt) = OffsetDateTime::from_unix_timestamp(epoch_secs) else {
+        return "???".into();
+    };
+    let fmt = format_description!("[weekday repr:short]");
+    dt.to_offset(local_offset())
+        .format(&fmt)
+        .unwrap_or_else(|_| "???".into())
+}
+
+/// Percent with one decimal under 10 and none above: `0.6%`, `12%`, `140%`.
+pub fn pct_short(pct: f64) -> String {
+    if pct < 10.0 {
+        format!("{pct:.1}%")
+    } else {
+        format!("{pct:.0}%")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,5 +184,20 @@ mod tests {
         assert_eq!(bytes[6], b' ');
         assert_eq!(bytes[9], b':');
         assert_eq!(bytes[12], b':');
+    }
+
+    #[test]
+    fn weekday_short_shape_and_placeholder() {
+        assert_eq!(weekday_short(1_778_377_597).len(), 3);
+        assert_eq!(weekday_short(i64::MAX), "???");
+    }
+
+    #[test]
+    fn pct_short_decimals() {
+        assert_eq!(pct_short(0.0), "0.0%");
+        assert_eq!(pct_short(0.62), "0.6%");
+        assert_eq!(pct_short(9.94), "9.9%");
+        assert_eq!(pct_short(12.4), "12%");
+        assert_eq!(pct_short(140.0), "140%");
     }
 }

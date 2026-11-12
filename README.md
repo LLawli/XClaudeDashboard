@@ -41,7 +41,13 @@ until the reset?*
 ## Features
 
 - **Two views**: the 5-hour session window and the 7-day window, switchable
-  with one key (or a mouse click on the tabs).
+  with one key (or a mouse click on the tabs). On weekly-only plans (Claude
+  Ultra, no 5-hour window) it opens on the 7-day view and strikes out the
+  5h tab.
+- **Daily pace in the 7-day view**: average spend per day, the daily budget
+  that makes the rest of the quota last until the reset, and today's spend
+  against today's share, plus a per-day chart (past days, today, and the
+  budget for the days ahead).
 - **Live**: detects new writes to the SQLite log within ~200 ms
   (`PRAGMA data_version` polling): no restart, no manual refresh.
 - **Burn rate sparkline** with per-minute binning, peak marker and an

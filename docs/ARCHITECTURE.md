@@ -41,10 +41,11 @@ xclaude ──── polls PRAGMA data_version every tick (200 ms default)
 | `window.rs` | 5h/7d window rows (schema differences aliased here) |
 | `aggregate.rs` | Token aggregation by model (`token_usage`) and device (`cloud_cache`) |
 | `rate.rs` | Per-minute burn-rate series and binning for the sparkline |
+| `pace.rs` | 7d daily pace: per-day spend, average, budget until the reset |
 | `remote.rs` | Turso/libSQL sync: outbox push, pull, cache prune, device id |
 | `pricing.rs` | LiteLLM fetch, `claude-*` filter, longest-prefix model matching |
 | `ui.rs` | Fixed vertical layout, responsive gates, all cards |
-| `widgets/` | Header hero card, stacked share bar, legend table |
+| `widgets/` | Header hero card, stacked share bar, legend table, per-day bars |
 | `style.rs` / `colors.rs` | Severity colors, heat ramp, 10-hue series palette |
 | `format.rs` | Compact token counts (`1.2k`, `1.4M`), durations, money |
 
@@ -59,6 +60,17 @@ xclaude ──── polls PRAGMA data_version every tick (200 ms default)
   `xclaude` treats them as an external contract (e.g. the 7d table's
   `starts_at` is aliased to `start_at` in `window.rs`, and `used_percentage`
   is range-guarded in `ui.rs` because the column is externally controlled).
+- **Weekly-only plans are detected, not configured.** Each statusline hook
+  writes both window rows in the same run, so a 5h row missing or older
+  than the 7d row means the plan (Claude Ultra) has no 5h window. The view
+  follows that until the user picks a tab.
+- **Daily pace splits the reported percent, not a token limit.** The 7d
+  window is cut into 24 h slices from its start (the reset hour is the
+  boundary), and each slice gets its share of `used_percentage` in
+  proportion to its output tokens, so the slices sum to what Claude
+  reports. Today's budget is fixed at the slice start
+  (`(100 - spent before today) / slices left`) so it doesn't shrink while
+  it's being spent.
 - **Sync mirrors `syncCloud()`.** The Turso path replicates XClaudeUsage's
   JS implementation (same `token_delta` table, `INSERT OR IGNORE`, 500-row
   pull cap, 5 h retention) so both tools can sync interchangeably without

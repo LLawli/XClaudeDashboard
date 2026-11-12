@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Daily pace in the 7-day view: a `per day` header line (average spend per
+  day, the daily budget that lasts until the reset, today's spend against
+  today's share) and a per-day chart beside the burn rate.
+- Weekly-only plans (Claude Ultra, no 5-hour window) are detected from the
+  database: the dashboard opens on the 7-day view and strikes out the 5h tab.
+
 ### Security
 
 - Dependencies updated past current RustSec advisories (rustls,
